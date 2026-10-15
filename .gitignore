@@ -1,0 +1,18 @@
+# Dependencies (this plugin has none by design — a `link:` install gets no
+# own node_modules, so anything added here breaks the installed copy).
+node_modules/
+
+# Build / packaging artifacts
+*.tgz
+dist/
+.build/
+
+# The memory ledger is *your* data, never the plugin's.
+# Default location is ~/.dsh/ai-memory/, but a configured `dir` may point here.
+ledger.jsonl
+*.ledger.jsonl
+
+# Local scratch
+*.log
+.DS_Store
+Thumbs.db

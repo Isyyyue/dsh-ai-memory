@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>直接测渲染器（绕开 React）</title>
+<style>
+  html, body { margin: 0; background: #0d1117; color: #e6edf3; font: 13px/1.5 Consolas, monospace; }
+  /* 与插件 CSS 同形的容器：给 canvas 一个确定的尺寸 */
+  #stage { width: 760px; height: 420px; margin-top: 8px; border: 1px solid #30363d; position: relative; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  #out { position: fixed; right: 8px; top: 8px; width: 640px; max-height: 95vh; overflow: auto;
+         background: #161b22; padding: 8px; border-radius: 6px; font-size: 11px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<pre id="out">running…</pre>
+<script>
+  const lines = []
+  const log = (s) => { lines.push(s); document.getElementById('out').textContent = lines.join('\n') }
+
+  /**
+   * 只加载 client.js 拿到 `window.__GraphRenderer`（插桩暴露的），
+   * 然后**自己 new 一个渲染器**并喂数据 —— 完全不经过 React。
+   *
+   * 这样测的是**真正的渲染层**：尺寸、配色、不透明、视野适配。
+   * 本鲸手搓的假 React 有不确定性 bug，害本鲸误判过好几轮，这里绕开它。
+   */
+  /**
+   * ⚠️ 必须先给出 `window.__ModuleLoader__` —— client.js 顶层第一件事就是调它。
+   * 本鲸之前漏了这一步，于是 factory 根本没跑，`window.__GraphRenderer` 当然是 undefined。
+   *
+   * 这里只做**最小实现**：拿到 factory 就立刻执行，不做注册表、不做 React。
+   * 本鲸要测的是渲染器（普通类），不是插件的加载流程。
+   */
+  window.__ModuleLoader__ = {
+    load({ id, factory }) {
+      log('__ModuleLoader__.load(' + id + ')')
+      try {
+        // 只要求 react —— 插件 factory 的唯一依赖
+        const React = { createElement: () => null, useRef: () => ({ current: null }), useState: (i) => [i, () => {}], useEffect: () => {}, useMemo: (f) => f() }
+        factory((name) => {
+          if (name === 'react') return React
+          throw new Error('意外的 require: ' + name)
+        })
+        log('factory 执行完毕')
+      } catch (e) {
+        log('❌ factory 抛了: ' + e.message)
+      }
+    },
+  }
+
+  window.addEventListener('load', () => {
+    const s = document.createElement('script')
+    s.src = 'client.js?rev=' + Date.now()
+    s.onerror = () => log('❌ client.js 加载失败')
+    s.onload = () => setTimeout(runTest, 300)
+    document.head.appendChild(s)
+  })
+
+  function runTest() {
+    const R = window.__GraphRenderer
+    if (typeof R !== 'function') { log('❌ 没拿到 GraphRenderer（插桩没生效？）'); report(false); return }
+
+    const canvas = document.getElementById('cv')
+    const rect = canvas.getBoundingClientRect()
+    log('构造前: CSS=' + Math.round(rect.width) + 'x' + Math.round(rect.height) + ' buffer=' + canvas.width + 'x' + canvas.height)
+
+    const renderer = new R(canvas, { onSelect: () => {} })
+
+    // 三种 kind 各一个节点
+    const nodes = [
+      { id: 'j1', label: '判断：端口该是 8080', kind: 'judgment', status: 'active', degree: 2 },
+      { id: 'i1', label: '思考：也许问题不在端口', kind: 'insight', status: 'active', degree: 1 },
+      { id: 'r1', label: '规矩：只写判断，不写事实', kind: 'rule', status: 'active', degree: 1 },
+    ]
+    const edges = [
+      { from: 'j1', to: 'i1', type: 'complements' },
+      { from: 'j1', to: 'r1', type: 'depends' },
+    ]
+    renderer.setData(nodes, edges)
+
+    setTimeout(() => {
+      const r2 = canvas.getBoundingClientRect()
+      log('构造后: CSS=' + Math.round(r2.width) + 'x' + Math.round(r2.height) + ' buffer=' + canvas.width + 'x' + canvas.height)
+
+      const d = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data
+      const counts = new Map()
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] < 40) continue
+        const k = [d[i], d[i + 1], d[i + 2]].map((v) => Math.round(v / 32) * 32).join(',')
+        counts.set(k, (counts.get(k) || 0) + 1)
+      }
+      /** 目标色在不在画面上。 */
+      const has = (rgb, tol) => {
+        for (const [k, v] of counts) {
+          if (v < 15) continue
+          const c = k.split(',').map(Number)
+          if (Math.abs(c[0] - rgb[0]) <= tol && Math.abs(c[1] - rgb[1]) <= tol && Math.abs(c[2] - rgb[2]) <= tol) return true
+        }
+        return false
+      }
+      const painted = [...counts.values()].reduce((a, b) => a + b, 0)
+      // 固定调色板（不依赖主题色号 —— 主题的 brand 在深色下几乎是白的，会画成白点）
+      const blue = has([59, 130, 246], 48)    // #3b82f6 判断
+      const teal = has([20, 184, 166], 48)    // #14b8a6 思考
+      const amber = has([245, 158, 11], 48)   // #f59e0b 规矩
+
+      log('')
+      log('画面主要颜色（量化）:')
+      for (const [k, v] of [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)) log('  ' + k + ' × ' + v)
+      log('')
+      log('画的像素数       : ' + painted)
+      log('判断蓝 #3b82f6   : ' + blue)
+      log('思考青 #14b8a6   : ' + teal)
+      log('规矩琥珀 #f59e0b : ' + amber)
+      log('半径 degree=0/9  : ' + renderer.radiusOf({ degree: 0 }) + ' / ' + renderer.radiusOf({ degree: 9 }))
+      log('draw 报错        : ' + (renderer.lastDrawError ? renderer.lastDrawError.message : '无'))
+      log('视野 scale/tx/ty : ' + renderer.scale.toFixed(2) + ' / ' + renderer.tx.toFixed(0) + ' / ' + renderer.ty.toFixed(0))
+
+      const ok = canvas.width === Math.floor(r2.width) && painted > 800 && blue && teal && amber && !renderer.lastDrawError
+      report(ok, { canvas: canvas.width + 'x' + canvas.height, css: Math.round(r2.width) + 'x' + Math.round(r2.height), painted, blue, teal, amber })
+    }, 1500)
+  }
+
+  function report(ok, data) {
+    const v = 'VERDICT ' + (data ? JSON.stringify(data) : 'no-renderer') + ' ok=' + ok
+    log('')
+    log(v)
+    const el = document.createElement('div')
+    el.id = 'verdict'
+    el.style.cssText = 'position:fixed;left:8px;top:8px;z-index:999;background:#000;color:#0f0;font:700 20px Consolas,monospace;padding:10px'
+    el.textContent = v
+    document.body.appendChild(el)
+    document.title = 'AMRESULT ' + (ok ? 'ALL_PASS' : 'FAIL')
+  }
+</script>
+</body>
+</html>

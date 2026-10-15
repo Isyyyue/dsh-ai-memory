@@ -1,0 +1,18 @@
+# Normalize line endings on commit; scripts must land as LF.
+# `autocrlf` rewriting a checked-out script on another machine is a real risk,
+# so text files that are ever executed get an explicit `eol=lf`.
+* text=auto
+
+*.js  text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.md  text eol=lf
+*.html text eol=lf
+
+# The inlined worker source must stay byte-identical to
+# `lib/client.graph-worker.js` (enforced by test/worker-inline.test.js).
+# CRLF conversion would silently break that equality.
+lib/client.js text eol=lf
+lib/client.graph-worker.js text eol=lf
