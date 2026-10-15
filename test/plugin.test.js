@@ -1,10 +1,15 @@
 /**
- * 集成层测试：配置解包、六个操作、索引注入、图谱快照、HTTP 路由安全。
+ * Integration-layer tests: config unwrapping, the six operations, index
+ * injection, graph snapshots, and HTTP route security.
  *
- * 这一层是最容易"静默失效"的地方 —— 所以专门覆盖：
- *   - volatile 盒子对象解包（viya-memory 实测把卡写进 `[object Object]` 的坑）
- *   - 缺 inject 声明（插件整条不激活且不报错）
- *   - 路由的来源检查（/plugins/* 不过会话 cookie 校验）
+ * This layer is where failures go silent most easily, so it gets dedicated
+ * coverage:
+ *   - volatile box unwrapping (viya-memory measured cards being written into
+ *     `[object Object]`)
+ *   - a missing `inject` declaration (the whole plugin fails to activate and
+ *     reports no error)
+ *   - the routes' origin checks (`/plugins/*` does not pass session cookie
+ *     validation)
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -30,23 +35,23 @@ before(() => {
 })
 
 after(() => {
-  try { rmSync(work, { recursive: true, force: true }) } catch { /* 忽略 */ }
+  try { rmSync(work, { recursive: true, force: true }) } catch { /* ignore */ }
 })
 
-/** 造一个可控时钟，让 id 与时间戳可复现。 */
+/** Build a controllable clock so ids and timestamps are reproducible. */
 function clock(start = 1_700_000_000_000) {
   let t = start
   return () => (t += 1000)
 }
 
-describe('config · 解包（volatile 盒子对象的坑）', () => {
-  test('普通对象直接读', () => {
+describe('config · unwrapping (the volatile box trap)', () => {
+  test('a plain object is read directly', () => {
     const c = resolveConfig({ dir: '/tmp/x', maxIndexEntries: 5 })
     assert.equal(c.dir, '/tmp/x')
     assert.equal(c.maxIndexEntries, 5)
   })
 
-  test('{ get() } 盒子被解包 —— 不解包会得到 "[object Object]"', () => {
+  test('a { get() } box is unwrapped — leaving it boxed yields "[object Object]"', () => {
     const c = resolveConfig({
       dir: { get: () => '/tmp/boxed' },
       maxIndexEntries: { get: () => 7 },
@@ -57,151 +62,151 @@ describe('config · 解包（volatile 盒子对象的坑）', () => {
     assert.equal(c.injectIndex, false)
   })
 
-  test('get() 抛异常时回落默认值，不崩', () => {
+  test('a throwing get() falls back to the default instead of crashing', () => {
     const c = resolveConfig({ dir: { get: () => { throw new Error('boom') } } })
     assert.ok(typeof c.dir === 'string' && c.dir !== '' && !c.dir.includes('object'))
   })
 
-  test('非法数字回落默认值（NaN 不该静默生效）', () => {
+  test('an invalid number falls back to the default (NaN must not take effect silently)', () => {
     assert.equal(resolveConfig({ maxIndexEntries: 'abc' }).maxIndexEntries, 40)
     assert.equal(resolveConfig({ maxIndexEntries: -1 }).maxIndexEntries, 40)
     assert.equal(resolveConfig({ maxGraphNodes: 0 }).maxGraphNodes, 500)
   })
 
-  test('undefined / null 配置用默认值', () => {
+  test('undefined / null config uses defaults', () => {
     const c = resolveConfig(undefined)
     assert.equal(c.enabled, true)
     assert.equal(c.injectIndex, true)
     assert.ok(c.dir.includes('ai-memory'))
   })
 
-  test('enabled: false 能被识别', () => {
+  test('enabled: false is recognized', () => {
     assert.equal(resolveConfig({ enabled: false }).enabled, false)
     assert.equal(resolveConfig({ enabled: { get: () => false } }).enabled, false)
   })
 })
 
-describe('operations · 写 / 取代 / 复述', () => {
-  test('首次写入是 created', () => {
+describe('operations · write / supersede / restatement', () => {
+  test('a first write is created', () => {
     const l = openLibrary(join(work, 'ops1'))
     const ops = createOperations(l, { now: clock() })
-    const r = ops.write({ text: '我认为确定性取代优于相似度阈值' })
+    const r = ops.write({ text: 'I hold that deterministic supersession beats a similarity threshold' })
     assert.equal(r.action, 'created')
     assert.ok(r.node_id)
   })
 
-  test('同三元组不同 object → supersede，且旧节点退役保留', () => {
+  test('same triple, different object → supersede, and the old node is retired but kept', () => {
     const l = openLibrary(join(work, 'ops2'))
     const ops = createOperations(l, { now: clock() })
-    const a = ops.write({ text: '端口是 8000', subject: 'svc', relation: 'port', object: '8000' })
-    const b = ops.write({ text: '端口是 8080', subject: 'svc', relation: 'port', object: '8080', reason: '迁移' })
+    const a = ops.write({ text: 'the port is 8000', subject: 'svc', relation: 'port', object: '8000' })
+    const b = ops.write({ text: 'the port is 8080', subject: 'svc', relation: 'port', object: '8080', reason: 'migration' })
     assert.equal(b.action, 'supersede')
     assert.equal(b.superseded_id, a.node_id)
 
     const { state } = l.load()
-    assert.equal(state.nodes.get(a.node_id).status, 'superseded', '旧的退役')
+    assert.equal(state.nodes.get(a.node_id).status, 'superseded', 'the old one is retired')
     assert.equal(state.nodes.get(b.node_id).status, 'active')
-    assert.equal(state.nodes.size, 2, '旧的仍在账本里（双时态，不删）')
+    assert.equal(state.nodes.size, 2, 'the old one stays in the ledger (bi-temporal, never deleted)')
   })
 
-  test('同三元组同 object → duplicate，不落盘', () => {
+  test('same triple, same object → duplicate, nothing written to disk', () => {
     const l = openLibrary(join(work, 'ops3'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '端口是 8000', subject: 'svc', relation: 'port', object: '8000' })
+    ops.write({ text: 'the port is 8000', subject: 'svc', relation: 'port', object: '8000' })
     const before = l.load().state.nodes.size
-    const dup = ops.write({ text: '又是 8000', subject: 'svc', relation: 'port', object: '8000' })
+    const dup = ops.write({ text: '8000 again', subject: 'svc', relation: 'port', object: '8000' })
     assert.equal(dup.action, 'duplicate')
-    assert.equal(l.load().state.nodes.size, before, '复述不新建节点')
+    assert.equal(l.load().state.nodes.size, before, 'a restatement creates no node')
   })
 
-  test('空判断被拒', () => {
+  test('an empty judgment is rejected', () => {
     const l = openLibrary(join(work, 'ops4'))
     const ops = createOperations(l, { now: clock() })
     assert.equal(ops.write({ text: '   ' }).action, 'rejected')
   })
 
-  test('写入真的落盘（重新打开还能读到）', () => {
+  test('a write really persists (it can be read after reopening)', () => {
     const dir = join(work, 'ops5')
     const ops1 = createOperations(openLibrary(dir), { now: clock() })
-    ops1.write({ text: '一条会持久化的判断' })
+    ops1.write({ text: 'a judgment that will persist' })
     const ops2 = createOperations(openLibrary(dir), { now: clock() })
-    const s = ops2.search({ query: '持久化' })
+    const s = ops2.search({ query: 'persist' })
     assert.equal(s.total, 1)
   })
 })
 
-describe('operations · 检索与连接', () => {
-  test('检索中文能命中', () => {
+describe('operations · search and connect', () => {
+  test('a query matches the stored judgment', () => {
     const l = openLibrary(join(work, 'ops6'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '图谱只做导航不做事实载荷' })
-    assert.equal(ops.search({ query: '导航' }).total, 1)
+    ops.write({ text: 'the graph only navigates; it carries no facts' })
+    assert.equal(ops.search({ query: 'navigates' }).total, 1)
   })
 
-  test('默认不返回已退役的判断', () => {
+  test('retired judgments are not returned by default', () => {
     const l = openLibrary(join(work, 'ops7'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '旧版本说明', subject: 'a', relation: 'b', object: '1' })
-    ops.write({ text: '新版本说明', subject: 'a', relation: 'b', object: '2' })
-    const activeOnly = ops.search({ query: '版本说明' })
-    assert.equal(activeOnly.total, 1, '默认只看活跃')
-    const withRetired = ops.search({ query: '版本说明', include_retired: true })
-    assert.equal(withRetired.total, 2, '要求时能看到退役的')
+    ops.write({ text: 'older description', subject: 'a', relation: 'b', object: '1' })
+    ops.write({ text: 'newer description', subject: 'a', relation: 'b', object: '2' })
+    const activeOnly = ops.search({ query: 'description' })
+    assert.equal(activeOnly.total, 1, 'by default only active ones are considered')
+    const withRetired = ops.search({ query: 'description', include_retired: true })
+    assert.equal(withRetired.total, 2, 'retired ones are visible on request')
   })
 
-  test('连接两条判断', () => {
+  test('link two judgments', () => {
     const l = openLibrary(join(work, 'ops8'))
     const ops = createOperations(l, { now: clock() })
-    const a = ops.write({ text: '判断甲' })
-    const b = ops.write({ text: '判断乙' })
-    const r = ops.connect({ from: a.node_id, to: b.node_id, type: 'complements', note: '互相补强' })
+    const a = ops.write({ text: 'judgment A' })
+    const b = ops.write({ text: 'judgment B' })
+    const r = ops.connect({ from: a.node_id, to: b.node_id, type: 'complements', note: 'they reinforce each other' })
     assert.equal(r.ok, true)
     const s = l.load().state
     assert.equal(s.edges.length, 1)
     assert.equal(s.edges[0].type, 'complements')
   })
 
-  test('连接不存在的 id → 明确失败，不静默', () => {
+  test('linking a nonexistent id → an explicit failure, not silence', () => {
     const l = openLibrary(join(work, 'ops9'))
     const ops = createOperations(l, { now: clock() })
-    const a = ops.write({ text: '甲' })
+    const a = ops.write({ text: 'A' })
     const r = ops.connect({ from: a.node_id, to: 'nope' })
     assert.equal(r.ok, false)
     assert.match(r.note, /No judgment/)
   })
 
-  test('自连被拒', () => {
+  test('a self-link is rejected', () => {
     const l = openLibrary(join(work, 'ops10'))
     const ops = createOperations(l, { now: clock() })
-    const a = ops.write({ text: '甲' })
+    const a = ops.write({ text: 'A' })
     assert.equal(ops.connect({ from: a.node_id, to: a.node_id }).ok, false)
   })
 })
 
-describe('operations · 演化轨迹', () => {
-  test('history 显示取代链与修订历史', () => {
+describe('operations · provenance', () => {
+  test('history shows the supersession chain and revision history', () => {
     const l = openLibrary(join(work, 'ops11'))
     const ops = createOperations(l, { now: clock() })
-    const a = ops.write({ text: '第一版', subject: 's', relation: 'r', object: '1' })
-    const b = ops.write({ text: '第二版', subject: 's', relation: 'r', object: '2' })
-    ops.write({ text: '第三版', subject: 's', relation: 'r', object: '3' })
+    const a = ops.write({ text: 'version one', subject: 's', relation: 'r', object: '1' })
+    const b = ops.write({ text: 'version two', subject: 's', relation: 'r', object: '2' })
+    ops.write({ text: 'version three', subject: 's', relation: 'r', object: '3' })
 
     const h = ops.history({ id: a.node_id })
     assert.equal(h.found, true)
-    assert.equal(h.chain.length, 3, '取代链要走到底')
+    assert.equal(h.chain.length, 3, 'the supersession chain is walked to its end')
     assert.equal(h.chain[2].status, 'active')
     assert.equal(h.chain[0].status, 'superseded')
   })
 
-  test('history 找不到时明确说明', () => {
+  test('history says so explicitly when the id is not found', () => {
     const l = openLibrary(join(work, 'ops12'))
     const ops = createOperations(l, { now: clock() })
     assert.equal(ops.history({ id: 'ghost' }).found, false)
   })
 })
 
-describe('operations · 规矩治理', () => {
-  test('read 空库返回空列表', () => {
+describe('operations · rule governance', () => {
+  test('read on an empty store returns an empty list', () => {
     const l = openLibrary(join(work, 'rule1'))
     const ops = createOperations(l, { now: clock() })
     const r = ops.rule({ action: 'read' })
@@ -209,41 +214,41 @@ describe('operations · 规矩治理', () => {
     assert.deepEqual(r.rules, [])
   })
 
-  test('改规矩必须给理由 —— 没有理由不予受理（可审计的前提）', () => {
+  test('amending a rule requires a reason — without one the change is refused (the precondition for auditability)', () => {
     const l = openLibrary(join(work, 'rule2'))
     const ops = createOperations(l, { now: clock() })
-    const r = ops.rule({ action: 'amend', id: 'r1', text: '新规矩', reason: '' })
+    const r = ops.rule({ action: 'amend', id: 'r1', text: 'new rule', reason: '' })
     assert.equal(r.ok, false)
     assert.match(r.note, /reason/)
   })
 
-  test('规矩可以建立并读取', () => {
+  test('a rule can be created and read back', () => {
     const l = openLibrary(join(work, 'rule3'))
     const ops = createOperations(l, { now: clock() })
-    const made = ops.rule({ action: 'amend', id: 'r1', text: '只写判断，不写事实', reason: '初始' })
+    const made = ops.rule({ action: 'amend', id: 'r1', text: 'Write judgments, not facts', reason: 'initial' })
     assert.equal(made.ok, true)
     const read = ops.rule({ action: 'read' })
     assert.equal(read.rules.length, 1)
-    assert.equal(read.rules[0].text, '只写判断，不写事实')
+    assert.equal(read.rules[0].text, 'Write judgments, not facts')
   })
 
-  test('规矩改多次，revision 递增且历史留痕', () => {
+  test('amending a rule repeatedly increments revision and leaves history', () => {
     const l = openLibrary(join(work, 'rule4'))
     const ops = createOperations(l, { now: clock() })
-    const made = ops.rule({ action: 'amend', id: 'r1', text: '第一版规矩', reason: '建立' })
+    const made = ops.rule({ action: 'amend', id: 'r1', text: 'rule version one', reason: 'created' })
     const id = made.rules[0].id
-    ops.rule({ action: 'amend', id, text: '第二版规矩', reason: '发现第一版太宽' })
+    ops.rule({ action: 'amend', id, text: 'rule version two', reason: 'the first version was too broad' })
     const read = ops.rule({ action: 'read' })
-    assert.equal(read.rules[0].text, '第二版规矩')
+    assert.equal(read.rules[0].text, 'rule version two')
     assert.equal(read.rules[0].revision, 2)
-    assert.ok(read.rules[0].history.length >= 2, '历史要留痕（可回滚）')
+    assert.ok(read.rules[0].history.length >= 2, 'history must be on record (so it can be rolled back)')
   })
 
-  test('规矩与判断分开统计', () => {
+  test('rules and judgments are counted separately', () => {
     const l = openLibrary(join(work, 'rule5'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '一条判断' })
-    ops.rule({ action: 'amend', id: 'r1', text: '一条规矩', reason: '建立' })
+    ops.write({ text: 'a judgment' })
+    ops.rule({ action: 'amend', id: 'r1', text: 'a rule', reason: 'created' })
     const s = ops.stats()
     assert.equal(s.judgments, 1)
     assert.equal(s.rules, 1)
@@ -251,7 +256,7 @@ describe('operations · 规矩治理', () => {
 })
 
 describe('operations · stats', () => {
-  test('空库是诚实的空，不假装有内容', () => {
+  test('an empty store is honestly empty; it does not pretend to have content', () => {
     const l = openLibrary(join(work, 'stats1'))
     const ops = createOperations(l, { now: clock() })
     const s = ops.stats()
@@ -260,178 +265,182 @@ describe('operations · stats', () => {
     assert.match(s.note, /empty/)
   })
 
-  test('孤立判断被数出来', () => {
+  test('orphan judgments are counted', () => {
     const l = openLibrary(join(work, 'stats2'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '孤零零一条' })
+    ops.write({ text: 'one lonely judgment' })
     assert.equal(ops.stats().orphans, 1)
   })
 
-  test('连接后不再是孤立', () => {
+  test('a node is no longer an orphan once linked', () => {
     const l = openLibrary(join(work, 'stats3'))
     const ops = createOperations(l, { now: clock() })
-    const a = ops.write({ text: '甲' })
-    const b = ops.write({ text: '乙' })
+    const a = ops.write({ text: 'A' })
+    const b = ops.write({ text: 'B' })
     ops.connect({ from: a.node_id, to: b.node_id })
     assert.equal(ops.stats().orphans, 0)
   })
 })
 
-describe('index text · 会话开始注入', () => {
-  test('空库注入空串（不占上下文）', () => {
+describe('index text · injected at session start', () => {
+  test('an empty store injects an empty string (costing no context)', () => {
     const l = openLibrary(join(work, 'idx1'))
     assert.equal(buildIndexText(l, 40), '')
   })
 
-  test('有判断时注入规矩与判断摘要', () => {
+  test('with judgments present, rules and judgment summaries are injected', () => {
     const l = openLibrary(join(work, 'idx2'))
     const ops = createOperations(l, { now: clock() })
-    ops.rule({ action: 'amend', id: 'r1', text: '只写判断', reason: '建立' })
-    ops.write({ text: '我认为图谱只做导航' })
+    ops.rule({ action: 'amend', id: 'r1', text: 'Write judgments, not facts', reason: 'created' })
+    ops.write({ text: 'The graph only navigates; it carries no facts' })
     const text = buildIndexText(l, 40)
     assert.match(text, /Rules you set for yourself/)
-    assert.match(text, /只写判断/)
-    assert.match(text, /图谱只做导航/)
+    assert.match(text, /Write judgments, not facts/)
+    assert.match(text, /graph only navigates/)
   })
 
-  test('注入的是索引不是全文 —— 长正文被截断（防上下文膨胀）', () => {
+  test('an index is injected, not full text — long bodies are truncated (guarding against context bloat)', () => {
     const l = openLibrary(join(work, 'idx3'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '很长的判断'.repeat(200) })
+    ops.write({ text: 'a very long judgment'.repeat(200) })
     const text = buildIndexText(l, 40)
-    assert.ok(text.length < 2000, `注入不该把全文塞进去，实际 ${text.length}`)
+    assert.ok(text.length < 2000, `the injection must not carry the full text; actual ${text.length}`)
   })
 
-  test('maxEntries 生效', () => {
+  test('maxEntries takes effect', () => {
     const l = openLibrary(join(work, 'idx4'))
     const ops = createOperations(l, { now: clock() })
-    for (let i = 0; i < 10; i += 1) ops.write({ text: `判断编号 ${i}` })
+    for (let i = 0; i < 10; i += 1) ops.write({ text: `judgment number ${i}` })
     const text = buildIndexText(l, 3)
     assert.match(text, /first 3 listed/)
   })
 
-  test('**想法（insight）也要注入** —— 否则等于白写', () => {
+  test('**insights are injected too** — otherwise writing one is pointless', () => {
     const l = openLibrary(join(work, 'idx5'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '想法：也许问题不在端口上', kind: 'insight' })
+    ops.write({ text: 'Insight: maybe the problem is not the port', kind: 'insight' })
     const text = buildIndexText(l, 40)
-    // insight 的价值就是"被想起来"；不注入的话它只躺在账本里，永远没人看。
-    assert.match(text, /也许问题不在端口上/)
-    assert.match(text, /想法/)
+    // The whole point of an insight is being recalled; without injection it just sits unread in the ledger.
+    assert.match(text, /maybe the problem is not the port/)
+    assert.match(text, /Insight/)
   })
 
-  test('三种 kind 能同时出现在注入里，且分节清楚', () => {
+  test('all three kinds can appear in the injection at once, in clearly separated sections', () => {
     const l = openLibrary(join(work, 'idx6'))
     const ops = createOperations(l, { now: clock() })
-    ops.rule({ action: 'amend', id: 'r1', text: '规矩：只写判断', reason: '建立' })
-    ops.write({ text: '判断：端口是 8080', subject: 'svc', relation: 'port', object: '8080' })
-    ops.write({ text: '想法：或许该换个角度看', kind: 'insight' })
+    ops.rule({ action: 'amend', id: 'r1', text: 'Rule: write judgments only', reason: 'created' })
+    ops.write({ text: 'Judgment: the port is 8080', subject: 'svc', relation: 'port', object: '8080' })
+    ops.write({ text: 'Insight: perhaps another angle is needed', kind: 'insight' })
     const text = buildIndexText(l, 40)
     assert.match(text, /Rules you set for yourself/)
     assert.match(text, /Active judgments \(1 total\)/)
     assert.match(text, /Ideas not yet settled into judgments/)
   })
 
-  test('想法的预算更小（不挤占判断的位置）', () => {
+  test('insights get a smaller budget (they must not crowd out judgments)', () => {
     const l = openLibrary(join(work, 'idx7'))
     const ops = createOperations(l, { now: clock() })
-    for (let i = 0; i < 10; i += 1) ops.write({ text: `想法编号 ${i}`, kind: 'insight' })
-    // maxEntries=4 → 想法预算 2 条
+    for (let i = 0; i < 10; i += 1) ops.write({ text: `insight number ${i}`, kind: 'insight' })
+    // maxEntries=4 → an insight budget of 2
     const text = buildIndexText(l, 4)
     assert.match(text, /newest 2 listed/)
   })
 })
 
-describe('graph · 快照（导航层，不含全文）', () => {
-  test('空库快照是空的', () => {
+describe('graph · snapshot (a navigation layer, no full text)', () => {
+  test('an empty store yields an empty snapshot', () => {
     const s = buildSnapshot(foldEvents([]))
     assert.deepEqual(s.nodes, [])
     assert.deepEqual(s.edges, [])
   })
 
-  test('节点带 label / status / degree，不含全文', () => {
+  test('nodes carry label / status / degree, never full text', () => {
     const l = openLibrary(join(work, 'g1'))
     const ops = createOperations(l, { now: clock() })
-    const a = ops.write({ text: '判断甲'.repeat(100) })
-    const b = ops.write({ text: '判断乙' })
+    const a = ops.write({ text: 'judgment A'.repeat(100) })
+    const b = ops.write({ text: 'judgment B' })
     ops.connect({ from: a.node_id, to: b.node_id })
     const snap = buildSnapshot(l.load().state)
     assert.equal(snap.nodes.length, 2)
     assert.equal(snap.edges.length, 1)
     const na = snap.nodes.find((n) => n.id === a.node_id)
-    assert.equal(na.degree, 1, '度数算出来')
-    assert.ok(na.label.length <= 61, 'label 是摘要不是全文')
-    assert.equal(na.text, undefined, '不该带全文')
+    assert.equal(na.degree, 1, 'degree is computed')
+    assert.ok(na.label.length <= 61, 'the label is a summary, not the full text')
+    assert.equal(na.text, undefined, 'must not carry full text')
   })
 
-  test('默认视图**只画活跃**（退役的直接消失 —— 主人明确要求）', () => {
+  test('the default view draws **active nodes only** (retired ones simply disappear — an explicit product requirement)', () => {
     const l = openLibrary(join(work, 'g2'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '旧', subject: 'a', relation: 'b', object: '1' })
-    ops.write({ text: '新', subject: 'a', relation: 'b', object: '2' })
+    ops.write({ text: 'old', subject: 'a', relation: 'b', object: '1' })
+    ops.write({ text: 'new', subject: 'a', relation: 'b', object: '2' })
     const def = buildSnapshot(l.load().state)
-    // ⚠️ 这条断言**改过两次**，两次都是被主人的实际观感纠正的：
-    //   1. 最初断言 `nodes.length === 1` —— 结果图是「1 节点 · 0 连线」的空白，
-    //      因为每条 supersedes 边都指向退役节点，滤掉退役 = 滤掉所有边。
-    //   2. 于是改成"默认带上整条取代链" —— 图能看了，但满屏**灰点**，
-    //      主人问「为什么有灰的有白的」。
-    //   3. 最终（主人定的）：默认**只画活跃**。图是"我现在相信什么"，
-    //      不是"我历史上想过什么"。要看进化史就右键切 `?retired=1`。
-    assert.equal(def.nodes.length, 1, '默认只该有活跃的那条')
+    // ⚠️ This assertion **changed twice**, both times because the rendered graph
+    //   corrected the design:
+    //   1. It first asserted `nodes.length === 1` — the result was a blank
+    //      "1 node · 0 links" graph, because every supersedes edge points at a
+    //      retired node, so filtering retired nodes filters out every edge.
+    //   2. The default then carried the whole supersession chain — the graph was
+    //      readable but covered in grey dots, prompting "why are some grey and
+    //      some white".
+    //   3. Final decision: default to **active only**. The graph is "what I
+    //      believe now", not "what I have historically thought". The evolution
+    //      history is one right-click away via `?retired=1`.
+    assert.equal(def.nodes.length, 1, 'only the active one should be present by default')
     assert.equal(def.nodes[0].status, 'active')
-    assert.equal(def.edges.length, 0, '没有活跃之间的边，就是 0 条（干净）')
+    assert.equal(def.edges.length, 0, 'with no edges between active nodes there are 0 (clean)')
   })
 
-  test('要求时（includeRetired）才带出**整条**取代链', () => {
+  test('only on request (includeRetired) does the **whole** supersession chain appear', () => {
     const l = openLibrary(join(work, 'g2b'))
     const ops = createOperations(l, { now: clock() })
     ops.write({ text: 'v1', subject: 'x', relation: 'y', object: '1' })
     ops.write({ text: 'v2', subject: 'x', relation: 'y', object: '2' })
     ops.write({ text: 'v3', subject: 'x', relation: 'y', object: '3' })
     const def = buildSnapshot(l.load().state)
-    assert.equal(def.nodes.length, 1, '默认只有最新那代')
+    assert.equal(def.nodes.length, 1, 'by default only the newest generation')
     const all = buildSnapshot(l.load().state, { includeRetired: true })
-    assert.equal(all.nodes.length, 3, '要求时三代都在（这才是"进化轨迹"）')
-    assert.equal(all.edges.length, 2, '两条取代边都在')
+    assert.equal(all.nodes.length, 3, 'all three generations are present on request (that is the evolution history)')
+    assert.equal(all.edges.length, 2, 'both supersession edges are present')
   })
 
-  test('includeRetired 给出全部节点（含未被取代的孤立退役项）', () => {
+  test('includeRetired returns every node (including retired orphans not in any supersession chain)', () => {
     const l = openLibrary(join(work, 'g2c'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '被取代的', subject: 'a', relation: 'b', object: '1' })
-    ops.write({ text: '取代它的', subject: 'a', relation: 'b', object: '2' })
-    ops.write({ text: '与取代链无关的第三条' })
+    ops.write({ text: 'the superseded one', subject: 'a', relation: 'b', object: '1' })
+    ops.write({ text: 'the one that superseded it', subject: 'a', relation: 'b', object: '2' })
+    ops.write({ text: 'a third judgment unrelated to the supersession chain' })
     const def = buildSnapshot(l.load().state)
     const all = buildSnapshot(l.load().state, { includeRetired: true })
-    assert.equal(all.nodes.length, 3, 'includeRetired 含全部 3 个')
+    assert.equal(all.nodes.length, 3, 'includeRetired contains all 3')
     assert.ok(def.nodes.length <= all.nodes.length)
   })
 
-  test('maxNodes 截断并标记 truncated', () => {
+  test('maxNodes truncates and flags truncated', () => {
     const l = openLibrary(join(work, 'g3'))
     const ops = createOperations(l, { now: clock() })
-    for (let i = 0; i < 5; i += 1) ops.write({ text: `判断 ${i}` })
+    for (let i = 0; i < 5; i += 1) ops.write({ text: `judgment ${i}` })
     const snap = buildSnapshot(l.load().state, { maxNodes: 2 })
     assert.equal(snap.nodes.length, 2)
     assert.equal(snap.truncated, true)
   })
 
-  test('截断后只保留两端都在图内的边', () => {
+  test('after truncation only edges with both endpoints in the graph are kept', () => {
     const l = openLibrary(join(work, 'g4'))
     const ops = createOperations(l, { now: clock() })
-    const a = ops.write({ text: '甲' })
-    const b = ops.write({ text: '乙' })
+    const a = ops.write({ text: 'A' })
+    const b = ops.write({ text: 'B' })
     ops.connect({ from: a.node_id, to: b.node_id })
     const snap = buildSnapshot(l.load().state, { maxNodes: 1 })
-    assert.equal(snap.edges.length, 0, '端点被裁掉的边不能留下')
+    assert.equal(snap.edges.length, 0, 'an edge with a truncated endpoint must not remain')
   })
 
-  test('countStats 统计正确', () => {
+  test('countStats counts correctly', () => {
     const l = openLibrary(join(work, 'g5'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '旧', subject: 'a', relation: 'b', object: '1' })
-    ops.write({ text: '新', subject: 'a', relation: 'b', object: '2' })
-    ops.rule({ action: 'amend', id: 'r', text: '规矩', reason: 'x' })
+    ops.write({ text: 'old', subject: 'a', relation: 'b', object: '1' })
+    ops.write({ text: 'new', subject: 'a', relation: 'b', object: '2' })
+    ops.rule({ action: 'amend', id: 'r', text: 'a rule', reason: 'x' })
     const c = countStats(l.load().state)
     assert.equal(c.active, 2)
     assert.equal(c.retired, 1)
@@ -439,24 +448,24 @@ describe('graph · 快照（导航层，不含全文）', () => {
     assert.equal(c.rules, 1)
   })
 
-  test('nodeDetail 给出反链与取代链（可解释性的核心）', () => {
+  test('nodeDetail returns backlinks and the supersession chain (the core of explainability)', () => {
     const l = openLibrary(join(work, 'g6'))
     const ops = createOperations(l, { now: clock() })
-    const a = ops.write({ text: '甲', subject: 's', relation: 'r', object: '1' })
-    const b = ops.write({ text: '乙', subject: 's', relation: 'r', object: '2' })
+    const a = ops.write({ text: 'A', subject: 's', relation: 'r', object: '1' })
+    const b = ops.write({ text: 'B', subject: 's', relation: 'r', object: '2' })
     const d = nodeDetail(l.load().state, a.node_id)
     assert.equal(d.supersededBy, b.node_id)
     assert.equal(d.chain.length, 2)
     assert.ok(d.history.length >= 2)
   })
 
-  test('nodeDetail 找不到返回 null', () => {
+  test('nodeDetail returns null when not found', () => {
     assert.equal(nodeDetail(foldEvents([]), 'ghost'), null)
   })
 })
 
-describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
-  test('回环地址判定', () => {
+describe('routes · security (/plugins/* does not pass session cookie validation)', () => {
+  test('loopback address detection', () => {
     assert.equal(isLoopback('127.0.0.1'), true)
     assert.equal(isLoopback('::1'), true)
     assert.equal(isLoopback('::ffff:127.0.0.1'), true)
@@ -464,13 +473,13 @@ describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
     assert.equal(isLoopback(undefined), false)
   })
 
-  test('同源判定', () => {
+  test('same-origin detection', () => {
     assert.equal(originMatchesHost('http://127.0.0.1:19387', '127.0.0.1:19387'), true)
     assert.equal(originMatchesHost('http://evil.com', '127.0.0.1:19387'), false)
     assert.equal(originMatchesHost('not-a-url', '127.0.0.1:19387'), false)
   })
 
-  test('非回环来源被 403 拒绝', () => {
+  test('a non-loopback source is rejected with 403', () => {
     const l = openLibrary(join(work, 'r1'))
     const routes = createRoutes(l)
     const res = fakeRes()
@@ -479,7 +488,7 @@ describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
     assert.match(res.body, /loopback/)
   })
 
-  test('跨源 Origin 被 403 拒绝', () => {
+  test('a cross-origin Origin header is rejected with 403', () => {
     const l = openLibrary(join(work, 'r2'))
     const routes = createRoutes(l)
     const res = fakeRes()
@@ -490,10 +499,10 @@ describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
     assert.equal(res.statusCode, 403)
   })
 
-  test('回环 + 同源 → 200 且返回快照', () => {
+  test('loopback + same-origin → 200 with a snapshot', () => {
     const l = openLibrary(join(work, 'r3'))
     const ops = createOperations(l, { now: clock() })
-    ops.write({ text: '一条判断' })
+    ops.write({ text: 'a judgment' })
     const routes = createRoutes(l)
     const res = fakeRes()
     byPath(routes, `${ROUTE_BASE}/snapshot`).handler(
@@ -506,7 +515,7 @@ describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
     assert.equal(body.nodes.length, 1)
   })
 
-  test('无 Origin 头时按同源处理（curl / 本机探测）', () => {
+  test('a missing Origin header is treated as same-origin (curl / local probing)', () => {
     const l = openLibrary(join(work, 'r4'))
     const routes = createRoutes(l)
     const res = fakeRes()
@@ -517,16 +526,16 @@ describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
     assert.equal(res.statusCode, 200)
   })
 
-  test('三条数据路由（worker 走 DSH 自己的分块路由）的路径都带 /plugins/dsh-ai-memory 前缀', () => {
+  test('all three data routes (the worker goes through DSH\'s own chunk route) carry the /plugins/dsh-ai-memory prefix', () => {
     const routes = createRoutes(openLibrary(join(work, 'r5')))
     assert.equal(routes.length, 3)
     for (const r of routes) {
-      assert.ok(r.path.startsWith(ROUTE_BASE), `${r.path} 必须以 ${ROUTE_BASE} 开头`)
+      assert.ok(r.path.startsWith(ROUTE_BASE), `${r.path} must start with ${ROUTE_BASE}`)
       assert.equal(r.kind, 'exact')
     }
   })
 
-  test('/node 找不到时返回 ok:false 而不是 500', () => {
+  test('/node returns ok:false rather than 500 when not found', () => {
     const l = openLibrary(join(work, 'r6'))
     const routes = createRoutes(l)
     const res = fakeRes()
@@ -538,10 +547,10 @@ describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
     assert.equal(JSON.parse(res.body).ok, false)
   })
 
-  test('记忆库损坏时路由报 500 而不是崩掉进程', () => {
+  test('a corrupt memory store yields 500 rather than crashing the process', () => {
     const bad = {
       load() {
-        throw new Error('磁盘炸了')
+        throw new Error('disk failure')
       },
     }
     const routes = createRoutes(bad)
@@ -555,49 +564,49 @@ describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
   })
 })
 
-describe('routes · Worker 走 DSH 自己的分块路由（不自建）', () => {
-  test('worker 文件名符合 client-modules 的分块命名约定', () => {
-    // 正则来自 dsh-client-modules/lib/index.js:169
+describe('routes · the worker goes through DSH\'s own chunk route (no route of our own)', () => {
+  test('the worker file name follows client-modules chunk naming convention', () => {
+    // The regex comes from dsh-client-modules/lib/index.js:169
     const CLIENT_CHUNK = /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/
-    assert.ok(CLIENT_CHUNK.test(WORKER_FILE), `${WORKER_FILE} 应当匹配 ${CLIENT_CHUNK}`)
+    assert.ok(CLIENT_CHUNK.test(WORKER_FILE), `${WORKER_FILE} should match ${CLIENT_CHUNK}`)
   })
 
-  test('worker 文件真的存在于 lib/ 下（命名对了但文件不在也没用）', () => {
+  test('the worker file actually exists under lib/ (a correct name is useless without the file)', () => {
     const p = join(here, '..', 'lib', WORKER_FILE)
-    assert.ok(existsSync(p), `找不到 ${p}`)
+    assert.ok(existsSync(p), `cannot find ${p}`)
   })
 
-  test('本插件**不**为 worker 自建路由（走官方通道更好）', () => {
+  test('this plugin does **not** register its own worker route (the official channel is better)', () => {
     const routes = createRoutes(openLibrary(join(work, 'w1')))
     const paths = routes.map((r) => r.path)
-    assert.ok(!paths.some((p) => p.includes('graph-worker')), `不该有 worker 路由，实际：${paths.join(', ')}`)
-    assert.equal(routes.length, 3, '只剩三个数据端点')
+    assert.ok(!paths.some((p) => p.includes('graph-worker')), `there should be no worker route; actual: ${paths.join(', ')}`)
+    assert.equal(routes.length, 3, 'only three data endpoints remain')
   })
 
-  test('worker 源码里有力导向实现与物理常量', () => {
+  test('the worker source contains a force-directed implementation and physics constants', () => {
     const src = readFileSync(join(here, '..', 'lib', WORKER_FILE), 'utf8')
-    assert.ok(src.includes('self.onmessage'), '要有 onmessage 入口')
-    assert.ok(/function tick/.test(src), '要有 tick 实现')
-    assert.ok(/ALPHA_DECAY/.test(src), '要有 alpha 衰减常量')
-    assert.ok(/linkDistance/.test(src), '要有 linkDistance 参数')
+    assert.ok(src.includes('self.onmessage'), 'an onmessage entry point is required')
+    assert.ok(/function tick/.test(src), 'a tick implementation is required')
+    assert.ok(/ALPHA_DECAY/.test(src), 'an alpha decay constant is required')
+    assert.ok(/linkDistance/.test(src), 'a linkDistance parameter is required')
   })
 
-  test('worker 不 import 任何东西（Worker 里没有模块解析）', () => {
+  test('the worker imports nothing (a Worker has no module resolution)', () => {
     const src = readFileSync(join(here, '..', 'lib', WORKER_FILE), 'utf8')
     const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
-    assert.ok(!/^\s*import\s/m.test(stripped), '不得有 import')
-    assert.ok(!/require\(/.test(stripped), '不得有 require')
+    assert.ok(!/^\s*import\s/m.test(stripped), 'must not contain import')
+    assert.ok(!/require\(/.test(stripped), 'must not contain require')
   })
 })
 
-/** 按路径取路由（不依赖数组下标 —— 加路由不会打乱测试）。 */
+/** Look up a route by path (no array index — adding a route cannot break these tests). */
 function byPath(routes, path) {
   const r = routes.find((x) => x.path === path)
-  assert.ok(r, `找不到路由 ${path}（现有：${routes.map((x) => x.path).join(', ')}）`)
+  assert.ok(r, `cannot find route ${path} (present: ${routes.map((x) => x.path).join(', ')})`)
   return r
 }
 
-/** 造一个最小的假 res，记录状态码与响应体。 */
+/** Build a minimal fake res that records status code and body. */
 function fakeRes() {
   return {
     statusCode: 0,

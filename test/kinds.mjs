@@ -1,10 +1,13 @@
 /**
- * 验证「按类型分色」这套东西真的通了 —— 从写入到快照到渲染样式。
+ * Verify that per-kind coloring actually works end to end — from write, through
+ * the snapshot, to the rendered style.
  *
- * 为什么单独做：颜色/形状是**视觉**的，单元测试断言不了"好不好看"，
- * 但能断言**数据链路是通的**（三种 kind 都能写、能读、能拿到各自的样式）。
+ * Why it is separate: color and shape are **visual**, and a unit test cannot
+ * assert that something "looks good", but it can assert that **the data path is
+ * connected** (all three kinds can be written, read back, and resolve to their
+ * own style).
  *
- * 用法：node test/kinds.mjs
+ * Usage: node test/kinds.mjs
  */
 
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -16,7 +19,7 @@ import { buildSnapshot, countStats } from '../src/graph.js'
 import { KIND } from '../src/ledger.js'
 
 let fails = 0
-/** 断言并打印。 */
+/** Assert and print. */
 function check(label, cond, extra = '') {
   if (cond) console.log(`  ✓ ${label}${extra ? ` — ${extra}` : ''}`)
   else {
@@ -30,66 +33,66 @@ let clock = 1_700_000_000_000
 const lib = openLibrary(dir)
 const ops = createOperations(lib, { now: () => (clock += 1000) })
 
-console.log('\n【三种 kind 都能写】')
-const j = ops.write({ text: '判断：这个端口该是 8080', subject: 'svc', relation: 'port', object: '8080' })
-const i = ops.write({ text: '思考：也许问题根本不在端口上', kind: KIND.INSIGHT })
-const r = ops.rule({ action: 'amend', text: '规矩：只写判断，不写事实', reason: '立个约束' })
+console.log('\n[all three kinds can be written]')
+const j = ops.write({ text: 'Judgment: this port should be 8080', subject: 'svc', relation: 'port', object: '8080' })
+const i = ops.write({ text: 'Thought: perhaps the problem is not the port at all', kind: KIND.INSIGHT })
+const r = ops.rule({ action: 'amend', text: 'Rule: write judgments, not facts', reason: 'set a constraint' })
 
-check('judgment 写入成功', typeof j.node_id === 'string' && j.node_id !== '')
-check('insight 写入成功', typeof i.node_id === 'string' && i.node_id !== '')
-check('rule 写入成功', typeof r.node_id === 'string' || r.ok === true)
+check('judgment written', typeof j.node_id === 'string' && j.node_id !== '')
+check('insight written', typeof i.node_id === 'string' && i.node_id !== '')
+check('rule written', typeof r.node_id === 'string' || r.ok === true)
 
-console.log('\n【快照里带上 kind】')
+console.log('\n[the snapshot carries kind]')
 const snap = buildSnapshot(lib.load().state)
-check('快照有 3 个节点', snap.nodes.length === 3, `实际 ${snap.nodes.length}`)
+check('the snapshot has 3 nodes', snap.nodes.length === 3, `actual ${snap.nodes.length}`)
 const kinds = snap.nodes.map((n) => n.kind).sort()
-check('三种 kind 都出现在快照里', kinds.join(',') === 'insight,judgment,rule', kinds.join(','))
-check('每个节点都有 kind 字段', snap.nodes.every((n) => typeof n.kind === 'string'))
+check('all three kinds appear in the snapshot', kinds.join(',') === 'insight,judgment,rule', kinds.join(','))
+check('every node has a kind field', snap.nodes.every((n) => typeof n.kind === 'string'))
 
-console.log('\n【统计分开计】')
+console.log('\n[counts are tracked separately]')
 const st = countStats(lib.load().state)
-check('judgments 独立计数', st.judgments === 1, `judgments=${st.judgments}`)
-check('rules 独立计数', st.rules === 1, `rules=${st.rules}`)
-check('insights 独立计数', st.insights === 1, `insights=${st.insights}`)
+check('judgments counted separately', st.judgments === 1, `judgments=${st.judgments}`)
+check('rules counted separately', st.rules === 1, `rules=${st.rules}`)
+check('insights counted separately', st.insights === 1, `insights=${st.insights}`)
 
-console.log('\n【insight 不参与取代（关键设计）】')
-// 思考没有三元组，所以写第二条思考不该取代第一条
-const i2 = ops.write({ text: '思考：或者该换个角度看', kind: KIND.INSIGHT })
+console.log('\n[insights take no part in supersession (a key design decision)]')
+// A thought has no triple, so writing a second thought must not supersede the first
+const i2 = ops.write({ text: 'Thought: or perhaps another angle is needed', kind: KIND.INSIGHT })
 const st2 = countStats(lib.load().state)
-check('第二条 insight 没有取代第一条', st2.insights === 2, `insights=${st2.insights}`)
-check('第一条 insight 仍然 active', lib.load().state.nodes.get(i.node_id).status === 'active')
+check('the second insight did not supersede the first', st2.insights === 2, `insights=${st2.insights}`)
+check('the first insight is still active', lib.load().state.nodes.get(i.node_id).status === 'active')
 void i2
 
-console.log('\n【judgment 仍然会被取代（回归）】')
-ops.write({ text: '判断：端口改成 9090', subject: 'svc', relation: 'port', object: '9090' })
+console.log('\n[judgments are still superseded (regression)]')
+ops.write({ text: 'Judgment: the port changed to 9090', subject: 'svc', relation: 'port', object: '9090' })
 const st3 = countStats(lib.load().state)
-check('旧判断被取代', lib.load().state.nodes.get(j.node_id).status === 'superseded')
-check('活跃判断仍为 1', st3.judgments === 1, `judgments=${st3.judgments}`)
+check('the old judgment was superseded', lib.load().state.nodes.get(j.node_id).status === 'superseded')
+check('exactly 1 active judgment remains', st3.judgments === 1, `judgments=${st3.judgments}`)
 
-console.log('\n【客户端那份样式表覆盖了三种 kind】')
+console.log('\n[the client stylesheet covers all three kinds]')
 const { readFileSync } = await import('node:fs')
 const { fileURLToPath } = await import('node:url')
 const { dirname } = await import('node:path')
 const here = dirname(fileURLToPath(import.meta.url))
 const clientSrc = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 for (const k of ['judgment', 'insight', 'rule']) {
-  check(`样式表里有 ${k}`, new RegExp(`${k}:\\s*\\{`).test(clientSrc))
+  check(`the stylesheet has ${k}`, new RegExp(`${k}:\\s*\\{`).test(clientSrc))
 }
-check('未知 kind 有兜底样式', /KIND_FALLBACK/.test(clientSrc))
-// 主人明确要求"全要 ⚪" —— 形状统一为圆，只用颜色区分
-check('三种 kind 形状全是圆', (() => {
+check('an unknown kind has a fallback style', /KIND_FALLBACK/.test(clientSrc))
+// Explicit product requirement: "all of them ⚪" — shapes are unified to a circle, distinguished by color alone
+check('all three kinds use a circular shape', (() => {
   const t = /const KIND_STYLE = Object\.freeze\(\{[\s\S]*?\n    \}\)/.exec(clientSrc)
   if (t === null) return false
   const shapes = [...t[0].matchAll(/shape:\s*'([a-z]+)'/g)].map((m) => m[1])
   return shapes.length === 3 && new Set(shapes).size === 1 && shapes[0] === 'circle'
 })())
-check('命中判定与绘制共用外接系数', /shapeExtent\(kindStyle\(p\.node\.kind\)\.shape\)/.test(clientSrc))
+check('hit testing and drawing share the same extent factor', /shapeExtent\(kindStyle\(p\.node\.kind\)\.shape\)/.test(clientSrc))
 
 rmSync(dir, { recursive: true, force: true })
 
 console.log(`\n${'='.repeat(56)}`)
 if (fails > 0) {
-  console.log(`失败 ${fails} 项`)
+  console.log(`${fails} check(s) failed`)
   process.exit(1)
 }
-console.log('三种 kind 的数据链路全通 ✓')
+console.log('the data path for all three kinds is fully connected ✓')

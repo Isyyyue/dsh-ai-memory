@@ -1,25 +1,28 @@
 /**
- * 把 `lib/client.graph-worker.js` 的源码**内联进 `lib/client.js`** 的标记区。
+ * Inline the source of `lib/client.graph-worker.js` into the marked region of `lib/client.js`.
  *
- * ## 为什么要内联
+ * ## Why inline it
  *
- * Worker 是拖拽的前提（拖拽要把坐标发给它钉住节点）。而建 Worker 需要一个 URL：
+ * The Worker is a prerequisite for dragging (drag coordinates are sent to it to pin nodes).
+ * Creating a Worker requires a URL:
  *
- *   · **包内分块 URL** 要求 `?rev=<客户端 bundle 的 rev>` 精确匹配，不带就 404
- *   · rev 要从自己的 script 标签 / `__DSH_BOOT__` 里反查 —— 而**桌面版的传输方式
- *     不一定留下 script 标签**（走 `loadBundle`），于是拿不到 rev → 404 →
- *     Worker 建不起来 → **拖不动**（而且不报错）
+ *   · The **packaged chunk URL** requires `?rev=<client bundle rev>` to match exactly; without it, 404.
+ *   · rev must be recovered from the plugin's own script tag / `__DSH_BOOT__` — but the **desktop
+ *     transport does not necessarily leave a script tag behind** (it goes through `loadBundle`),
+ *     so rev cannot be obtained → 404 → the Worker cannot be created → **nothing drags**
+ *     (and no error is reported).
  *
- * 内联成字符串后用 **Blob URL** 建 Worker：**不发任何网络请求**，
- * 不依赖 rev、不依赖路由、不依赖传输方式。桌面版与网页版都通。
+ * Inlining the source into a string and building the Worker from a **Blob URL** makes **no network
+ * request at all** and depends on neither rev, route, nor transport. It works in both the desktop
+ * and web builds.
  *
- * ## 为什么用生成器而不是手写
+ * ## Why a generator instead of hand-editing
  *
- * 唯一真源仍然是 `lib/client.graph-worker.js`（好读、好测）。
- * 这个脚本把它同步进 `client.js` 的标记区，**并且测试会校验两者一致** ——
- * 手改了 worker 却忘了跑生成器，测试会红。
+ * The single source of truth remains `lib/client.graph-worker.js` (easy to read, easy to test).
+ * This script synchronizes it into the marked region of `client.js`, **and a test verifies the two
+ * agree** — editing the worker by hand and forgetting to run the generator turns that test red.
  *
- * 用法：node test/inline-worker.mjs
+ * Usage: node test/inline-worker.mjs
  */
 
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -37,22 +40,22 @@ const END = '// <<< WORKER-SOURCE <<<'
 const beginIdx = clientSrc.indexOf(BEGIN)
 const endIdx = clientSrc.indexOf(END)
 if (beginIdx < 0 || endIdx < 0 || endIdx < beginIdx) {
-  console.log('✗ 找不到标记区。请先在 client.js 里放上：')
+  console.log('✗ Marked region not found. Add the following to client.js first:')
   console.log(`    ${BEGIN}`)
-  console.log('    （worker 源码）')
+  console.log('    (worker source)')
   console.log(`    ${END}`)
   process.exit(1)
 }
 
-// 用 JSON.stringify 生成合法的 JS 字符串字面量 —— 反引号、${}、反斜杠全都不用操心
+// Use JSON.stringify to produce a valid JS string literal — backticks, ${}, and backslashes all handled.
 const literal = JSON.stringify(workerSrc)
 const block = `${BEGIN}\n    const WORKER_SOURCE = ${literal}\n    ${END}`
 
 const next = clientSrc.slice(0, beginIdx) + block + clientSrc.slice(endIdx + END.length)
 
 if (next === clientSrc) {
-  console.log(`✓ 已是最新（worker ${workerSrc.length} 字符）`)
+  console.log(`✓ Already up to date (worker ${workerSrc.length} chars)`)
 } else {
   writeFileSync(clientPath, next)
-  console.log(`✓ 已内联 worker 源码（${workerSrc.length} 字符 → client.js 现在 ${next.length} 字符）`)
+  console.log(`✓ Worker source inlined (${workerSrc.length} chars → client.js is now ${next.length} chars)`)
 }

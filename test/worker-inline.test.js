@@ -1,12 +1,14 @@
 /**
- * 校验「内联 worker 源码」与真源一致。
+ * Verify that the inlined worker source matches the real source.
  *
- * 为什么必须有这条：worker 的**唯一真源**是 `lib/client.graph-worker.js`，
- * 它由 `test/inline-worker.mjs` 同步进 `client.js` 的标记区。
- * 如果有人手改了 worker 却忘了跑生成器，客户端用的就是**旧代码** ——
- * 而且**不报错**，只是行为不对（本插件最贵的一类 bug）。
+ * Why this is required: the worker's **single source of truth** is
+ * `lib/client.graph-worker.js`, which `test/inline-worker.mjs` synchronizes into
+ * the marked region of `client.js`. If someone edits the worker by hand and
+ * forgets to run the generator, the client runs **stale code** — and **reports
+ * no error**, it just behaves incorrectly (the most expensive class of bug in
+ * this plugin).
  *
- * 用法：node test/worker-inline.test.js
+ * Usage: node test/worker-inline.test.js
  */
 
 import { test, describe } from 'node:test'
@@ -19,12 +21,12 @@ const here = dirname(fileURLToPath(import.meta.url))
 const CLIENT = join(here, '..', 'lib', 'client.js')
 const WORKER = join(here, '..', 'lib', 'client.graph-worker.js')
 
-/** 从 client.js 里取出内联的 worker 源码。 */
+/** Extract the inlined worker source from client.js. */
 function inlinedWorkerSource() {
   const src = readFileSync(CLIENT, 'utf8')
   const m = /const WORKER_SOURCE = (")/.exec(src)
   if (m === null) return null
-  // 从字面量起点往后扫，找到配对的结束引号（尊重转义）
+  // Scan forward from the start of the literal to its matching closing quote (respecting escapes).
   let i = m.index + m[0].length - 1
   const start = i
   i += 1
@@ -42,29 +44,29 @@ function inlinedWorkerSource() {
   }
 }
 
-describe('worker · 内联源码与真源一致', () => {
-  test('client.js 里有 WORKER_SOURCE 标记区', () => {
+describe('worker · inlined source matches the real source', () => {
+  test('client.js contains the WORKER_SOURCE marked region', () => {
     const src = readFileSync(CLIENT, 'utf8')
-    assert.ok(src.includes('// >>> WORKER-SOURCE'), '缺少开始标记')
-    assert.ok(src.includes('// <<< WORKER-SOURCE <<<'), '缺少结束标记')
-    assert.ok(/const WORKER_SOURCE = "/.test(src), '缺少 WORKER_SOURCE 常量')
+    assert.ok(src.includes('// >>> WORKER-SOURCE'), 'the opening marker is missing')
+    assert.ok(src.includes('// <<< WORKER-SOURCE <<<'), 'the closing marker is missing')
+    assert.ok(/const WORKER_SOURCE = "/.test(src), 'the WORKER_SOURCE constant is missing')
   })
 
-  test('内联的源码**逐字等于** lib/client.graph-worker.js', () => {
+  test('the inlined source is **byte-identical** to lib/client.graph-worker.js', () => {
     const expected = readFileSync(WORKER, 'utf8')
     const actual = inlinedWorkerSource()
-    assert.ok(actual !== null, '解析不出内联源码')
+    assert.ok(actual !== null, 'the inlined source could not be parsed')
     assert.equal(actual, expected,
-      '内联的 worker 与真源不一致 —— 跑 `node test/inline-worker.mjs` 同步')
+      'the inlined worker does not match the real source — run `node test/inline-worker.mjs` to synchronize')
   })
 
-  test('内联的不是空串（空串等于没有 Worker）', () => {
+  test('the inlined value is not an empty string (an empty string means no Worker)', () => {
     const actual = inlinedWorkerSource()
-    assert.ok(typeof actual === 'string' && actual.length > 1000, `内联长度异常：${actual?.length}`)
+    assert.ok(typeof actual === 'string' && actual.length > 1000, `unexpected inlined length: ${actual?.length}`)
   })
 
-  test('worker 源码本身有 onmessage 入口（内联后仍要能跑）', () => {
+  test('the worker source itself has an onmessage entry (it must still run once inlined)', () => {
     const actual = inlinedWorkerSource()
-    assert.ok(actual.includes('self.onmessage'), 'worker 必须有 onmessage')
+    assert.ok(actual.includes('self.onmessage'), 'the worker must have onmessage')
   })
 })

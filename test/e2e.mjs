@@ -1,11 +1,19 @@
 /**
- * 端到端验证：拿**真实记忆库路径**跑一遍完整生命周期。
+ * End-to-end verification: run the whole lifecycle against a **real memory-store path**.
  *
- * 这不是单元测试 —— 它验证的是"装进 profile 之后，真实环境下行为对不对"：
- *   写 → 检索 → 取代 → 轨迹 → 双链 → 规矩治理 → 图谱快照 → 统计
- * 每一步都断言，任何一步不对就非零退出。
+ * This is not a unit test — it verifies "once installed into a profile, does it
+ * behave correctly in a real environment":
+ *   write → search → supersede → history → bidirectional links → rule governance →
+ *   graph snapshot → stats
+ * Every step asserts; a single wrong step exits non-zero.
  *
- * 用临时目录，不碰 ~/.dsh/ai-memory 的真实数据。
+ * Uses a temporary directory and never touches the real data in ~/.dsh/ai-memory.
+ *
+ * Note: the Chinese fixture strings below are kept byte-identical and written as
+ * `\u` escapes, which keeps this source ASCII-only. Several of them are the payload
+ * of the Chinese-search checks (a judgment's own text is what
+ * `ops.search({ query: ... })` has to hit), so rewording them would change what
+ * those checks exercise.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -19,7 +27,7 @@ const work = mkdtempSync(join(tmpdir(), 'dsh-ai-memory-e2e-'))
 let failures = 0
 let checks = 0
 
-/** 断言并打印。 */
+/** Assert and print. */
 function check(label, cond, extra = '') {
   checks += 1
   if (cond) {
@@ -37,106 +45,110 @@ try {
   const lib = openLibrary(work)
   const ops = createOperations(lib, { now })
 
-  console.log('\n【1】形成判断')
-  const j1 = ops.write({ text: '我认为确定性取代比相似度阈值可靠', subject: 'supersede', relation: '优于', object: 'similarity', tags: ['记忆'], citations: ['arXiv 2606.26511'] })
-  check('写入成功', j1.action === 'created', j1.node_id)
-  check('账本真的落盘', lib.load().state.nodes.size === 1)
+  console.log('\n[1] Forming a judgment')
+  const j1 = ops.write({ text: '\u6211\u8ba4\u4e3a\u786e\u5b9a\u6027\u53d6\u4ee3\u6bd4\u76f8\u4f3c\u5ea6\u9608\u503c\u53ef\u9760', subject: 'supersede', relation: '\u4f18\u4e8e', object: 'similarity', tags: ['\u8bb0\u5fc6'], citations: ['arXiv 2606.26511'] })
+  check('write succeeded', j1.action === 'created', j1.node_id)
+  check('the ledger really hit disk', lib.load().state.nodes.size === 1)
 
-  console.log('\n【2】写前必搜（先搜再写）')
-  const s1 = ops.search({ query: '取代' })
-  check('中文检索命中', s1.total >= 1, `total=${s1.total}`)
-  const s2 = ops.search({ query: '不存在的词汇xyz' })
-  check('无命中时诚实返回 0', s2.total === 0)
+  console.log('\n[2] Search before write (search first, then write)')
+  const s1 = ops.search({ query: '\u53d6\u4ee3' })
+  check('a Chinese query hits', s1.total >= 1, `total=${s1.total}`)
+  const s2 = ops.search({ query: '\u4e0d\u5b58\u5728\u7684\u8bcd\u6c47xyz' })
+  check('no hits is reported honestly as 0', s2.total === 0)
 
-  console.log('\n【3】确定性取代（核心）')
-  const j2 = ops.write({ text: '端口是 8000', subject: 'svc', relation: 'port', object: '8000' })
-  const j3 = ops.write({ text: '端口是 8080', subject: 'svc', relation: 'port', object: '8080', reason: '服务迁移了' })
-  check('同键不同 object → supersede', j3.action === 'supersede', `${j2.node_id} → ${j3.node_id}`)
-  check('旧判断被退役', lib.load().state.nodes.get(j2.node_id).status === 'superseded')
-  check('旧判断**仍在账本里**（双时态，不删）', lib.load().state.nodes.has(j2.node_id))
-  check('新判断是 active', lib.load().state.nodes.get(j3.node_id).status === 'active')
+  console.log('\n[3] Deterministic supersession (the core)')
+  const j2 = ops.write({ text: '\u7aef\u53e3\u662f 8000', subject: 'svc', relation: 'port', object: '8000' })
+  const j3 = ops.write({ text: '\u7aef\u53e3\u662f 8080', subject: 'svc', relation: 'port', object: '8080', reason: '\u670d\u52a1\u8fc1\u79fb\u4e86' })
+  check('same key, different object → supersede', j3.action === 'supersede', `${j2.node_id} → ${j3.node_id}`)
+  check('the old judgment is retired', lib.load().state.nodes.get(j2.node_id).status === 'superseded')
+  check('the old judgment **is still in the ledger** (bi-temporal, not deleted)', lib.load().state.nodes.has(j2.node_id))
+  check('the new judgment is active', lib.load().state.nodes.get(j3.node_id).status === 'active')
 
-  console.log('\n【4】复述不落盘（避免同一想法堆成十几张卡）')
-  const dup = ops.write({ text: '端口还是 8080', subject: 'svc', relation: 'port', object: '8080' })
-  check('同键同 object → duplicate', dup.action === 'duplicate')
-  check('没有新建节点', lib.load().state.nodes.size === 3, `nodes=${lib.load().state.nodes.size}`)
+  console.log('\n[4] A restatement is not written (so one idea does not pile up into a dozen cards)')
+  const dup = ops.write({ text: '\u7aef\u53e3\u8fd8\u662f 8080', subject: 'svc', relation: 'port', object: '8080' })
+  check('same key, same object → duplicate', dup.action === 'duplicate')
+  check('no node was created', lib.load().state.nodes.size === 3, `nodes=${lib.load().state.nodes.size}`)
 
-  console.log('\n【5】检索默认只看活跃')
-  const s3 = ops.search({ query: '端口' })
-  check('默认只返回活跃的', s3.total === 1, `total=${s3.total}`)
-  const s4 = ops.search({ query: '端口', include_retired: true })
-  check('要求时能看到退役的', s4.total === 2, `total=${s4.total}`)
+  console.log('\n[5] Search looks at active nodes only by default')
+  const s3 = ops.search({ query: '\u7aef\u53e3' })
+  check('only active ones are returned by default', s3.total === 1, `total=${s3.total}`)
+  const s4 = ops.search({ query: '\u7aef\u53e3', include_retired: true })
+  check('retired ones are visible when asked for', s4.total === 2, `total=${s4.total}`)
 
-  console.log('\n【6】演化轨迹（能看见来路）')
+  console.log('\n[6] Evolution history (provenance is visible)')
   const h = ops.history({ id: j2.node_id })
-  check('history 找得到', h.found === true)
-  check('取代链走到底', h.chain.length === 2, `chain=${h.chain.length}`)
-  check('链尾是当前活跃的', h.chain[h.chain.length - 1].status === 'active')
+  check('history is found', h.found === true)
+  check('the supersession chain runs to its end', h.chain.length === 2, `chain=${h.chain.length}`)
+  check('the chain tail is the currently active node', h.chain[h.chain.length - 1].status === 'active')
 
-  console.log('\n【7】双链（两边都能看到）')
-  const c = ops.connect({ from: j1.node_id, to: j3.node_id, type: 'complements', note: '两条都支持同一取向' })
-  check('建链成功', c.ok === true)
+  console.log('\n[7] Bidirectional links (visible from both sides)')
+  const c = ops.connect({ from: j1.node_id, to: j3.node_id, type: 'complements', note: '\u4e24\u6761\u90fd\u652f\u6301\u540c\u4e00\u53d6\u5411' })
+  check('the link was created', c.ok === true)
   const state = lib.load().state
-  // 注意：取代会**自动**建一条 supersedes 边（图谱上要看得见"谁取代了谁"），
-  // 所以此刻边数是 2 而不是 1 —— 第 3 步的取代贡献了另一条。
-  check('取代自动建的边 + 手工建的边都在', state.edges.length === 2, `edges=${state.edges.length}`)
-  check('有一条 supersedes 边', state.edges.some((e) => e.type === 'supersedes'))
-  check('有一条 complements 边', state.edges.some((e) => e.type === 'complements'))
-  check('出链可见', state.edges.filter((e) => e.from === j1.node_id).length === 1)
-  check('入链可见（反链）', state.edges.filter((e) => e.to === j3.node_id).length === 1)
+  // Note: supersession **automatically** creates a supersedes edge (the graph has to
+  // show who superseded whom), so the edge count here is 2 rather than 1 — the
+  // supersession in step 3 contributed the other one.
+  check('both the auto-created supersedes edge and the manual edge are present', state.edges.length === 2, `edges=${state.edges.length}`)
+  check('there is a supersedes edge', state.edges.some((e) => e.type === 'supersedes'))
+  check('there is a complements edge', state.edges.some((e) => e.type === 'complements'))
+  check('the outlink is visible', state.edges.filter((e) => e.from === j1.node_id).length === 1)
+  check('the backlink is visible', state.edges.filter((e) => e.to === j3.node_id).length === 1)
 
-  console.log('\n【8】规矩治理（改规矩必须给理由）')
-  const noReason = ops.rule({ action: 'amend', id: 'r1', text: '要写判断', reason: '' })
-  check('没理由被拒（可审计的前提）', noReason.ok === false)
-  const made = ops.rule({ action: 'amend', id: 'r1', text: '只写判断，不写事实', reason: '初始建立' })
-  check('给了理由就能建', made.ok === true)
+  console.log('\n[8] Rule governance (changing a rule requires a reason)')
+  const noReason = ops.rule({ action: 'amend', id: 'r1', text: '\u8981\u5199\u5224\u65ad', reason: '' })
+  check('a missing reason is refused (the precondition for auditability)', noReason.ok === false)
+  const made = ops.rule({ action: 'amend', id: 'r1', text: '\u53ea\u5199\u5224\u65ad\uff0c\u4e0d\u5199\u4e8b\u5b9e', reason: '\u521d\u59cb\u5efa\u7acb' })
+  check('with a reason it can be created', made.ok === true)
   const rid = made.rules[0].id
-  ops.rule({ action: 'amend', id: rid, text: '只写判断，不写事实；写不出就不写', reason: '补上"不写"的边界' })
+  ops.rule({ action: 'amend', id: rid, text: '\u53ea\u5199\u5224\u65ad\uff0c\u4e0d\u5199\u4e8b\u5b9e\uff1b\u5199\u4e0d\u51fa\u5c31\u4e0d\u5199', reason: '\u8865\u4e0a"\u4e0d\u5199"\u7684\u8fb9\u754c' })
   const read = ops.rule({ action: 'read' })
-  check('规矩改到第 2 版', read.rules[0].revision === 2)
-  check('变更历史留痕（可回滚）', read.rules[0].history.length >= 2)
+  check('the rule advanced to revision 2', read.rules[0].revision === 2)
+  check('the change history is on record (rollback-able)', read.rules[0].history.length >= 2)
 
-  console.log('\n【9】图谱快照（导航层，不含全文）')
+  console.log('\n[9] Graph snapshot (the navigation layer; no full text)')
   const snap = buildSnapshot(lib.load().state)
-  check('快照有节点', snap.nodes.length > 0, `nodes=${snap.nodes.length}`)
-  check('节点带度数', snap.nodes.every((n) => typeof n.degree === 'number'))
-  check('节点不含全文（只给 label）', snap.nodes.every((n) => n.text === undefined))
+  check('the snapshot has nodes', snap.nodes.length > 0, `nodes=${snap.nodes.length}`)
+  check('nodes carry a degree', snap.nodes.every((n) => typeof n.degree === 'number'))
+  check('nodes carry no full text (a label only)', snap.nodes.every((n) => n.text === undefined))
   const withRetired = buildSnapshot(lib.load().state, { includeRetired: true })
-  // ⚠️ 曾经断言 `withRetired.nodes.length > snap.nodes.length`（默认不含退役）。
-  // 但那个设计让默认视图变成「N 节点 · 0 连线」的空白图 —— 因为 supersedes 边
-  // 全部指向退役节点，滤掉它们就等于滤掉所有边，而"看见来路"正是本插件的核心价值。
-  // 现在默认视图**沿取代链带上整条来路**，所以两者可能相等（没有"孤立退役项"时）。
-  check('默认视图保留取代链（边不为空）', snap.edges.length > 0, `edges=${snap.edges.length}`)
-  check('includeRetired 是超集', withRetired.nodes.length >= snap.nodes.length, `${snap.nodes.length} → ${withRetired.nodes.length}`)
-  check('默认视图里的退役节点都是"来路"', (() => {
+  // ⚠️ This once asserted `withRetired.nodes.length > snap.nodes.length` (the default
+  // excluded retired nodes). That design turned the default view into a blank
+  // "N nodes · 0 links" graph, because every supersedes edge points at a retired node:
+  // filtering them out filtered out all the edges, and seeing provenance is the whole
+  // point of this plugin. The default view now **carries the entire supersession chain
+  // as provenance**, so the two counts may be equal (when there is no orphaned retired
+  // node).
+  check('the default view keeps the supersession chain (edges are not empty)', snap.edges.length > 0, `edges=${snap.edges.length}`)
+  check('includeRetired is a superset', withRetired.nodes.length >= snap.nodes.length, `${snap.nodes.length} → ${withRetired.nodes.length}`)
+  check('every retired node in the default view is provenance', (() => {
     const chainTargets = new Set(snap.edges.filter((e) => e.type === 'supersedes').map((e) => e.to))
     return snap.nodes.filter((n) => n.status !== 'active').every((n) => chainTargets.has(n.id))
-  })(), '不该把无关的退役节点也拉进来')
+  })(), 'unrelated retired nodes must not be dragged in')
 
-  console.log('\n【10】统计与注入')
+  console.log('\n[10] Stats and injection')
   const st = ops.stats()
-  check('统计出退役数', st.retired >= 1, `retired=${st.retired}`)
-  check('统计出规矩数', st.rules === 1)
-  check('无数据问题', st.problems.length === 0, st.problems.join('; '))
+  check('the retired count is reported', st.retired >= 1, `retired=${st.retired}`)
+  check('the rule count is reported', st.rules === 1)
+  check('no data problems', st.problems.length === 0, st.problems.join('; '))
   const idx = buildIndexText(lib, 40)
-  check('注入文本含规矩', idx.includes('只写判断'))
-  check('注入文本含判断', idx.includes('确定性取代'))
-  check('注入的是索引不是全文（长度可控）', idx.length < 3000, `${idx.length} 字符`)
+  check('the injected text contains the rule', idx.includes('\u53ea\u5199\u5224\u65ad'))
+  check('the injected text contains the judgment', idx.includes('\u786e\u5b9a\u6027\u53d6\u4ee3'))
+  check('what is injected is an index, not full text (bounded length)', idx.length < 3000, `${idx.length} chars`)
 
-  console.log('\n【11】持久化（重开进程还能读到）')
+  console.log('\n[11] Persistence (still readable after the process reopens)')
   const lib2 = openLibrary(work)
   const ops2 = createOperations(lib2, { now })
-  check('重开后判断还在', ops2.search({ query: '取代' }).total >= 1)
-  check('重开后取代状态还在', lib2.load().state.nodes.get(j2.node_id).status === 'superseded')
-  check('重开后双链还在（supersedes + complements 两条）', lib2.load().state.edges.length === 2, `edges=${lib2.load().state.edges.length}`)
+  check('the judgment is still there after reopening', ops2.search({ query: '\u53d6\u4ee3' }).total >= 1)
+  check('the superseded status is still there after reopening', lib2.load().state.nodes.get(j2.node_id).status === 'superseded')
+  check('both links are still there after reopening (supersedes + complements)', lib2.load().state.edges.length === 2, `edges=${lib2.load().state.edges.length}`)
 } finally {
-  try { rmSync(work, { recursive: true, force: true }) } catch { /* 忽略 */ }
+  try { rmSync(work, { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
 console.log(`\n${'='.repeat(60)}`)
-console.log(`端到端验证：${checks - failures}/${checks} 通过`)
+console.log(`End-to-end verification: ${checks - failures}/${checks} passed`)
 if (failures > 0) {
-  console.log(`失败 ${failures} 项`)
+  console.log(`${failures} failed`)
   process.exit(1)
 }
-console.log('全部通过 ✓')
+console.log('all passed ✓')
