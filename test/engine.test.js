@@ -51,7 +51,7 @@ describe('ledger · 折叠事件成状态', () => {
   test('未知事件类型记进 problems，绝不静默吞掉', () => {
     const s = foldEvents([{ seq: 1, at: 1, type: 'node.exploded', data: {} }])
     assert.equal(s.problems.length, 1)
-    assert.match(s.problems[0].reason, /未知事件类型/)
+    assert.match(s.problems[0].reason, /unknown event type/)
   })
 
   test('一条坏事件不让整个库读不出来（其余事件照常生效）', () => {
@@ -152,7 +152,7 @@ describe('ledger · 双时态取代（退役而不删除）', () => {
   test('取代指向不存在的节点 → problem，不崩', () => {
     const s = foldEvents([{ seq: 1, at: 1, type: 'node.superseded', data: { id: 'ghost', byId: 'nope' } }])
     assert.equal(s.problems.length, 1)
-    assert.match(s.problems[0].reason, /不存在/)
+    assert.match(s.problems[0].reason, /missing node/)
   })
 })
 

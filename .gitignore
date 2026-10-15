@@ -16,3 +16,21 @@ ledger.jsonl
 *.log
 .DS_Store
 Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Maintainer-only notes. These document one specific machine's debugging
+# session (browser automation setup, REA quirks, personal paths). They are
+# genuinely useful to the author and genuinely useless — or confusing — to
+# anyone else, so they stay local.
+# ---------------------------------------------------------------------------
+MAINTAINING.md
+HANDOVER.md
+
+# Browser-automation scaffolding for the visual checks. It drives REA inside a
+# local WSL distro with a hard-coded Chromium path and a fixed port, so it is
+# not portable. Kept locally; see test/README.md for what it does.
+test/_browser-*.html
+test/_instrument.mjs
+test/_wsl-serve.cjs
+test/_cdp-deep.mjs
+test/rea-prepare.mjs

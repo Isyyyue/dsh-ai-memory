@@ -167,7 +167,7 @@ describe('operations · 检索与连接', () => {
     const a = ops.write({ text: '甲' })
     const r = ops.connect({ from: a.node_id, to: 'nope' })
     assert.equal(r.ok, false)
-    assert.match(r.note, /找不到/)
+    assert.match(r.note, /No judgment/)
   })
 
   test('自连被拒', () => {
@@ -257,7 +257,7 @@ describe('operations · stats', () => {
     const s = ops.stats()
     assert.equal(s.judgments, 0)
     assert.equal(s.orphans, 0)
-    assert.match(s.note, /空的/)
+    assert.match(s.note, /empty/)
   })
 
   test('孤立判断被数出来', () => {
@@ -289,7 +289,7 @@ describe('index text · 会话开始注入', () => {
     ops.rule({ action: 'amend', id: 'r1', text: '只写判断', reason: '建立' })
     ops.write({ text: '我认为图谱只做导航' })
     const text = buildIndexText(l, 40)
-    assert.match(text, /规矩/)
+    assert.match(text, /Rules you set for yourself/)
     assert.match(text, /只写判断/)
     assert.match(text, /图谱只做导航/)
   })
@@ -307,7 +307,7 @@ describe('index text · 会话开始注入', () => {
     const ops = createOperations(l, { now: clock() })
     for (let i = 0; i < 10; i += 1) ops.write({ text: `判断编号 ${i}` })
     const text = buildIndexText(l, 3)
-    assert.match(text, /列前 3 条/)
+    assert.match(text, /first 3 listed/)
   })
 
   test('**想法（insight）也要注入** —— 否则等于白写', () => {
@@ -327,9 +327,9 @@ describe('index text · 会话开始注入', () => {
     ops.write({ text: '判断：端口是 8080', subject: 'svc', relation: 'port', object: '8080' })
     ops.write({ text: '想法：或许该换个角度看', kind: 'insight' })
     const text = buildIndexText(l, 40)
-    assert.match(text, /规矩（你给自己定的/)
-    assert.match(text, /活跃判断（共 1 条）/)
-    assert.match(text, /还没成形到能当判断的想法/)
+    assert.match(text, /Rules you set for yourself/)
+    assert.match(text, /Active judgments \(1 total\)/)
+    assert.match(text, /Ideas not yet settled into judgments/)
   })
 
   test('想法的预算更小（不挤占判断的位置）', () => {
@@ -338,7 +338,7 @@ describe('index text · 会话开始注入', () => {
     for (let i = 0; i < 10; i += 1) ops.write({ text: `想法编号 ${i}`, kind: 'insight' })
     // maxEntries=4 → 想法预算 2 条
     const text = buildIndexText(l, 4)
-    assert.match(text, /此处列最新 2 条/)
+    assert.match(text, /newest 2 listed/)
   })
 })
 
@@ -476,7 +476,7 @@ describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
     const res = fakeRes()
     routes[0].handler({ url: '/x', socket: { remoteAddress: '10.0.0.9' }, headers: {} }, res)
     assert.equal(res.statusCode, 403)
-    assert.match(res.body, /回环/)
+    assert.match(res.body, /loopback/)
   })
 
   test('跨源 Origin 被 403 拒绝', () => {
@@ -551,7 +551,7 @@ describe('routes · 安全（/plugins/* 不过会话 cookie 校验）', () => {
       res,
     )
     assert.equal(res.statusCode, 500)
-    assert.match(res.body, /读取记忆库失败/)
+    assert.match(res.body, /reading the memory store failed/)
   })
 })
 

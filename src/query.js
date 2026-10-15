@@ -1,54 +1,60 @@
 /**
- * 检索层：在活跃判断里找相关项。
+ * Search layer: find relevant items among active judgments.
  *
- * 为什么中文要专门处理 —— 这是社区实测的硬结论：
- *   dsh-hybrid-memory 发现 **FTS5 的 unicode61 分词器不切中文**，
- *   必须在写入索引前做 **2 字滑窗预分词**。
- *   dsh-memory-guide 也指出：通用 embedding 和分词层处理 CJK 都很拉胯。
+ * Why Chinese needs dedicated handling — a hard conclusion from community field
+ * testing:
+ *   dsh-hybrid-memory found that **FTS5's unicode61 tokenizer does not segment
+ *   Chinese**, so a **two-character sliding window** must pre-tokenize text
+ *   before it is written to the index.
+ *   dsh-memory-guide likewise notes that general-purpose embeddings and
+ *   tokenizers handle CJK poorly.
  *
- * 本模块**不用 FTS5、不用向量、不用外部依赖** —— 因为插件以 `link:` 方式装进 profile 时
- * 拿不到自己的 node_modules（viya-memory 与 dsh-balance-pill 都踩过这个坑）。
- * 所以自己实现一个够用的、确定性可测的词法打分：
+ * This module uses **no FTS5, no vectors and no external dependencies**, because
+ * a plugin installed into a profile via `link:` gets no own node_modules (both
+ * viya-memory and dsh-balance-pill hit this). So it implements a lexical scorer
+ * that is sufficient, deterministic and testable:
  *
- *   英文/数字 → 按空白与标点切词，前缀匹配
- *   中文      → 2 字滑窗（bigram）+ 单字兜底
+ *   Latin/digits → split on whitespace and punctuation, prefix match
+ *   Chinese      → two-character sliding window (bigram), single characters as fallback
  *
- * 打分权重参照 viya-memory 的实测取向：标题/正文 > 标签 > 关联说明。
- * 这里的"标题"对应判断的正文首句 —— 判断本身就是那句话。
+ * Scoring weights follow viya-memory's measured preference: title/body > tags >
+ * link note. Here "title" means the first sentence of the judgment body — the
+ * judgment is that sentence.
  */
 
 /**
- * 判断字符是否属于 CJK（中日韩）范围。
- * @param {string} ch - 单字符。
- * @returns {boolean} 是否 CJK。
+ * Test whether a character is in a CJK (Chinese/Japanese/Korean) range.
+ * @param {string} ch - Single character.
+ * @returns {boolean} Whether the character is CJK.
  */
 function isCjk(ch) {
   const c = ch.codePointAt(0)
   return (
-    (c >= 0x4e00 && c <= 0x9fff) || // CJK 统一表意
-    (c >= 0x3400 && c <= 0x4dbf) || // 扩展 A
-    (c >= 0xf900 && c <= 0xfaff) || // 兼容表意
-    (c >= 0x3040 && c <= 0x30ff) || // 日文假名
-    (c >= 0xac00 && c <= 0xd7af)    // 韩文
+    (c >= 0x4e00 && c <= 0x9fff) || // CJK Unified Ideographs
+    (c >= 0x3400 && c <= 0x4dbf) || // Extension A
+    (c >= 0xf900 && c <= 0xfaff) || // CJK Compatibility Ideographs
+    (c >= 0x3040 && c <= 0x30ff) || // Japanese kana
+    (c >= 0xac00 && c <= 0xd7af)    // Hangul
   )
 }
 
 /**
- * 把一段文本切成检索词。
+ * Split text into search terms.
  *
- * ⚠️ 一个实测踩过的坑：2 字滑窗**必须限制在连续的 CJK 段内**。
- * 如果对所有 CJK 单字无差别滑窗，跨过空格/标点边界就会造出不存在的词
- * （例如「图谱 导航」会产出「谱导」），于是 AND 检索永远命中不了，
- * 检索静默退化成 OR —— 表现是"结果不太准"，但**不报错**。
+ * ⚠️ A field-tested pitfall: the two-character sliding window **must stay inside
+ * one contiguous CJK run**. Sliding indiscriminately over every CJK character
+ * builds bigrams that span whitespace or punctuation boundaries and exist in no
+ * input term. Those bigrams can never match, so AND search silently degrades to
+ * OR: the symptom is "results are a bit off", with no error raised.
  *
- * @param {string} text - 原文。
- * @returns {string[]} 词数组（已小写化；中文产出 bigram + 单字）。
+ * @param {string} text - Source text.
+ * @returns {string[]} Term array (lowercased; Chinese yields bigrams plus single characters).
  */
 export function tokenize(text) {
   if (typeof text !== 'string' || text === '') return []
   const lower = text.toLowerCase()
 
-  // 第一遍：切出「拉丁词」与「CJK 连续段」两类 token，保留边界信息。
+  // Pass 1: split into Latin words and contiguous CJK runs, preserving boundaries.
   const segments = []
   let latin = ''
   let cjkRun = ''
@@ -81,7 +87,7 @@ export function tokenize(text) {
   flushLatin()
   flushCjk()
 
-  // 第二遍：CJK 段内做 2 字滑窗，并保留单字兜底（保召回）。
+  // Pass 2: two-character sliding window within each CJK run, keeping single characters as a recall fallback.
   const out = []
   for (const seg of segments) {
     if (seg.kind === 'latin') {
@@ -98,17 +104,22 @@ export function tokenize(text) {
 }
 
 /**
- * 判断一个 token 是否"有区分度"。
+ * Test whether a token is distinctive enough to gate AND matching.
  *
- * 这是本模块一个重要的设计取舍：**单个汉字太常见，不能决定 AND 是否成立**。
- * 实测踩过的坑：查询 `zzzz不存在` 会命中一条含「不」的无关判断，
- * 因为兜底单字「不」被当成了必需项。表现是"结果里混进不相干的东西"，且**不报错**。
+ * This is a key trade-off in this module: **a single CJK character is too common
+ * to decide whether AND holds**. A field-tested pitfall: a query that matches
+ * nothing on its Latin part still matched an unrelated judgment that happened to
+ * contain one of its single CJK characters, because that character fallback was
+ * treated as required. The symptom is irrelevant results mixed in, again with no
+ * error raised.
  *
- * 所以：拉丁词与 CJK bigram 有区分度（可作必需项），单个汉字只贡献分数、不把关。
- * 若查询**只**由单字组成（例如就查一个字），才退回用单字当必需项 —— 否则什么都搜不到。
+ * So Latin words and CJK bigrams are distinctive (they may be required), while
+ * single CJK characters contribute score only and gate nothing. Only when a
+ * query consists **solely** of single characters (a one-character query) do
+ * those characters become required — otherwise nothing would ever match.
  *
- * @param {string} token - 词。
- * @returns {boolean} 是否有区分度。
+ * @param {string} token - Term.
+ * @returns {boolean} Whether the token is distinctive.
  */
 function isDistinctive(token) {
   if (token.length > 1) return true
@@ -116,11 +127,11 @@ function isDistinctive(token) {
 }
 
 /**
- * 给一个节点算某个查询词的命中强度。
+ * Score one query term's match strength against a node.
  *
- * @param {object} node - 节点。
- * @param {string} term - 查询词（已小写）。
- * @returns {number} 权重贡献（0 = 未命中）。
+ * @param {object} node - Node.
+ * @param {string} term - Query term (already lowercased).
+ * @returns {number} Weight contribution (0 = no match).
  */
 function termScore(node, term) {
   let score = 0
@@ -132,22 +143,24 @@ function termScore(node, term) {
   for (const tag of node.tags ?? []) {
     if (String(tag).toLowerCase().includes(term)) score += 1.5
   }
-  // 单字命中打对折：它噪音大，不该和 bigram 同权。
+  // Single-character hits score half: they are noisy and must not weigh the same as a bigram.
   if (term.length === 1 && isCjk(term)) score *= 0.5
   return score
 }
 
 /**
- * 在节点集合里检索。
+ * Search a node set.
  *
- * 两轮召回（照搬 viya-memory 验证过的做法，避免"加词即自杀"）：
- *   第一轮 AND —— 每个**有区分度**的词都要命中，这是主路径；
- *   只有第一轮 0 条、且查询词 > 1 时，才跑第二轮 OR 兜底，并标记 relaxed。
+ * Two recall rounds (viya-memory's verified approach, avoiding "adding a term
+ * kills the query"):
+ *   round one AND — every **distinctive** term must hit; this is the main path;
+ *   only when round one yields 0 results and the query has more than one term
+ *   does round two run as an OR fallback, flagged relaxed.
  *
- * @param {object[]} nodes - 候选节点（通常只传 active 的）。
- * @param {string} query - 查询串。
- * @param {{limit?: number}} [opts] - 选项。
- * @returns {{results: object[], relaxed: boolean, total: number}} 检索结果。
+ * @param {object[]} nodes - Candidate nodes (normally active only).
+ * @param {string} query - Query string.
+ * @param {{limit?: number}} [opts] - Options.
+ * @returns {{results: object[], relaxed: boolean, total: number}} Search results.
  */
 export function search(nodes, query, opts = {}) {
   const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 10
@@ -155,7 +168,7 @@ export function search(nodes, query, opts = {}) {
   if (terms.length === 0) return { results: [], relaxed: false, total: 0 }
 
   const distinctive = terms.filter(isDistinctive)
-  // 只由单字组成时才用单字把关，否则纯单字查询会永远搜不到东西。
+  // Single characters gate matching only when they are all the query has, otherwise a single-character query could never match anything.
   const required = distinctive.length > 0 ? distinctive : terms
 
   const scored = []
@@ -175,8 +188,7 @@ export function search(nodes, query, opts = {}) {
   const andHits = scored.filter((r) => r.hits === required.length)
   let relaxed = false
   let pool = andHits
-  // 只在"放宽确实捞到了东西"时才标记 relaxed。
-  // 否则 0 条结果却报 relaxed:true，会让人以为"放宽后找到了"—— 那是误导。
+  // Flag relaxed only when relaxing actually found something. Reporting relaxed:true on 0 results would suggest the fallback found matches, which misleads.
   if (pool.length === 0 && required.length > 1 && scored.length > 0) {
     pool = scored
     relaxed = true
@@ -192,11 +204,11 @@ export function search(nodes, query, opts = {}) {
 }
 
 /**
- * 生成一句话摘要（用于注入与列表展示）。
+ * Build a one-line summary (for injection and list display).
  *
- * @param {string} text - 全文。
- * @param {number} [max] - 最大字符数。
- * @returns {string} 单行摘要。
+ * @param {string} text - Full text.
+ * @param {number} [max] - Maximum character count.
+ * @returns {string} Single-line summary.
  */
 export function summarize(text, max = 120) {
   if (typeof text !== 'string') return ''

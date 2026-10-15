@@ -1,8 +1,9 @@
-# dsh-ai-memory 的 bundle 自插入层。
+# Self-insertion layer for the dsh-ai-memory bundle.
 #
-# 这一行让插件被加载。记忆库目录默认在 ~/.dsh/ai-memory/，
-# 想换位置就在 profile 的 cordis.patch.yml 里覆盖同一 id 的 config.dir
-# （官方规范：用户补丁层在 bundle 层之后应用，且能跨升级存活）。
+# This row is what gets the plugin loaded. The memory store defaults to
+# ~/.dsh/ai-memory/; to relocate it, override config.dir for the same id in the
+# profile's own cordis.patch.yml (per spec, the user patch layer is applied
+# after the bundle layer and survives upgrades).
 - insert:
     - id: dsh-ai-memory
       name: dsh-ai-memory

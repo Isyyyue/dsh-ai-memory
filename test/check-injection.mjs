@@ -12,9 +12,9 @@ const text = buildIndexText(lib, 40)
 
 console.log('注入文本长度:', text.length, '字符\n')
 
-const hasRules = text.includes('规矩（你给自己定的')
-const hasJudgments = text.includes('活跃判断（共')
-const hasInsights = text.includes('还没成形到能当判断的想法')
+const hasRules = text.includes('Rules you set for yourself')
+const hasJudgments = text.includes('Active judgments (')
+const hasInsights = text.includes('Ideas not yet settled into judgments')
 
 console.log('含「规矩」一节   :', hasRules)
 console.log('含「判断」一节   :', hasJudgments)
@@ -22,7 +22,7 @@ console.log('含「想法」一节   :', hasInsights)
 console.log('含那条新想法     :', text.includes('节点大小=连接数'))
 console.log('')
 
-const i = text.indexOf('还没成形')
+const i = text.indexOf('Ideas not yet settled')
 if (i >= 0) {
   console.log('--- 想法那一节 ---')
   console.log(text.slice(i, i + 200))
