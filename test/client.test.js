@@ -810,19 +810,19 @@ describe('client · data channel', () => {
 
   test('error and empty states exist (not a blank screen)', () => {
     const code = readFileSync(CLIENT_PATH, 'utf8')
-    assert.ok(/Cannot read memory store/.test(code), 'an error-state string is required')
-    assert.ok(/No judgments yet/.test(code), 'an empty-state string is required')
+    assert.ok(/读不到记忆库/.test(code), 'an error-state string is required')
+    assert.ok(/还没有任何判断/.test(code), 'an empty-state string is required')
   })
 
   test('the legend lists only the **four edge kinds that can actually be drawn**', () => {
     const code = readFileSync(CLIENT_PATH, 'utf8')
     // `derives` / `restates` have no writer (the tools expose only the first four),
     // so listing them only invites the question "why is there no such line".
-    for (const label of ['Complements', 'Tensions', 'Supersedes', 'Depends on']) {
+    for (const label of ['互补', '矛盾', '取代', '依据']) {
       assert.ok(code.includes(label), `the legend should include "${label}"`)
     }
     const edgeLabel = code.slice(code.indexOf('const EDGE_LABEL'), code.indexOf('function edgeLegend'))
-    for (const dead of ['Derives', 'Restates']) {
+    for (const dead of ['衍生', '复述']) {
       assert.ok(!edgeLabel.includes(dead), `EDGE_LABEL should no longer contain "${dead}" (it cannot be created)`)
     }
   })

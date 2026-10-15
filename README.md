@@ -1,230 +1,205 @@
 # dsh-ai-memory
 
-A memory layer for an AI that holds **its own judgments** — judgment nodes, **deterministic
-supersession**, a bi-temporal ledger, and bidirectional links. Rules are governed separately from
-judgments, and the graph is the explainability surface.
+给 DSH 里的 AI 一层**自己的判断记忆**：判断节点 + **确定性取代（supersede）** + 双时态账本 + 双链，
+规则与判断分开治理，图谱作可解释性界面。
 
-> **Positioning (following the official DSH stance):** `the session log is the only source of truth; this plugin is a derived memory cache.`
-> It **appends no session events** (doing so would make sessions impossible to reopen). Judgments
-> live in their own ledger, and the current state is folded out of that ledger.
+> **定位（遵 DSH 官方立场）**：`session log 是唯一真相，本插件是派生的记忆缓存。`
+> 它**不 append 任何会话事件**（那样会让会话无法重开），判断存在自己的账本里，由账本 fold 出当前状态。
 
 ---
 
-## The problem it solves
+## 它解决什么问题
 
-Out of the box, DSH only remembers what happened **inside a single session**. Cross-session
-**judgments** — stances the model arrived at rather than facts it was told — have nowhere to live,
-and a judgment cannot be looked up; it can only be grown.
+DSH 开箱只记住**一个会话内**的事。跨会话的**判断**（"我认为 / 我倾向于"）无处安放 ——
+而判断是查不到的，只能自己长出来。
 
-This plugin lets an AI:
+这个插件让 AI 能：
 
-1. **Remember its own judgments**, not just facts;
-2. **Change its mind** by **superseding** the old judgment instead of overwriting it — the old
-   judgment is retired but **stays in the ledger**, so its provenance remains visible;
-3. **Mark contradictions explicitly** when it finds them, instead of letting two entries coexist
-   and contaminate each other;
-4. **Keep its own rules**, where amending a rule requires a stated reason and is auditable and
-   reversible;
-5. **See on the graph** how this web grew.
+1. **记住自己的判断**，而不只是事实；
+2. **改主意**时**取代**旧判断，而不是覆盖 —— 旧判断退役但**保留在账本里**，能看见来路；
+3. **发现矛盾**时明确标出来，而不是两条并存互相污染；
+4. **有自己的规矩**，且改规矩要说明理由、可审计、可回滚；
+5. **在图谱上看清**这张网是怎么长出来的。
 
 ---
 
-## Why deterministic supersession rather than similarity
+## 为什么是「确定性取代」而不是「相似度」
 
-This is the most important design argument behind the plugin, and it has empirical backing
-([arXiv 2606.26511](https://arxiv.org/abs/2606.26511), MemStrata):
+这是本插件最重要的设计依据，有学术实证（[arXiv 2606.26511](https://arxiv.org/abs/2606.26511)，MemStrata）：
 
-> Across 98 annotated pairs, cosine similarity separates "contradiction" from "restatement" with
-> an **AUROC of only 0.59 (close to random)**; and **contradictions are on average more similar to
-> the original fact than restatements are** (0.812 vs 0.800) — because a "value flip"
-> (8000 → 8080) is a **smaller edit** than a genuine paraphrase.
+> 在 98 个标注对上，余弦相似度区分「矛盾」与「复述」的 **AUROC 只有 0.59（接近随机）**；
+> 而且**矛盾平均比复述更像原事实**（0.812 vs 0.800）——
+> 因为「值翻转」（8000 → 8080）比真正的同义改写是**更小的编辑**。
 
-So: **similarity cannot, in principle, distinguish contradiction from restatement.** The decision
-has to be structural:
+所以：**相似度在原理上分不出矛盾与复述。** 判定必须是结构性的：
 
-> If a new fact **shares the (subject, relation) key with a stored fact but asserts a different
-> object**, the new one supersedes the old — **regardless of how similar their embeddings are**.
+> 新事实与已存事实**共享 (subject, relation) 键但断言不同 object**，则新的取代旧的
+> —— **与它们 embedding 多相似无关**。
 
-The supersession engine here therefore **contains no similarity computation and no LLM call**: it
-relies entirely on string normalization plus triple comparison. The benefits are testability,
-reproducibility, zero dependencies, and zero latency.
+本插件的取代引擎因此**不含任何相似度计算、不含 LLM 调用**：完全靠字符串规范化 + 三元组比对。
+好处是可测试、可复现、零依赖、零延迟。
 
-**Two symmetric ablation results** set the engine's posture:
+**两条对称的消融结论**决定了本引擎的姿态：
 
-| Approach | Consequence |
+| 做法 | 后果 |
 |---|---|
-| Aggressive merging (merge near-duplicates on write) | **Regresses below plain RAG** — it discards the detail needed to answer follow-up questions |
-| No supersession at all | Hallucination rate **rises 6×**, which is **less safe than being inaccurate** (the model sees both old and new values and starts inventing) |
+| 激进合并（写时合并近似项） | **回归到低于 RAG** —— 丢掉回答后续问题所需的细节 |
+| 完全不取代 | 虚构率**涨 6 倍**，**比不准确更不安全**（模型同时看到新旧值，开始编造） |
 
-→ **"Preserve first, then supersede"**: compress along the contradiction axis only, and never merge
-distinct facts.
+→ **「保留优先，然后取代」**：只在矛盾这一个轴上压缩，绝不合并不同事实。
 
 ---
 
-## The six tools
+## 六个工具
 
-| Tool | What it does |
+| 工具 | 干什么 |
 |---|---|
-| `memory_search` | Search existing judgments. **Must be called before writing** |
-| `memory_write` | Write one judgment; given a triple, it performs deterministic supersession automatically |
-| `memory_connect` | Create a bidirectional link: `complements` / `tensions` / `derives` / `depends` / `restates`; **both directions are written, no one-way edges** |
-| `memory_history` | View the evolution trail: how many times it changed, who superseded it, where the supersession chain ends |
-| `memory_rule` | Read / amend rules. **Amending a rule requires a reason** |
-| `memory_stats` | Health check: judgment count, rule count, retired count, orphans, data problems |
+| `memory_search` | 检索已有判断。**写之前必须先调它** |
+| `memory_write` | 写一条判断；给了三元组就自动做确定性取代 |
+| `memory_connect` | 建双链（互补 / 矛盾 / 衍生 / 依据 / 复述），**两边都写，不留单向边** |
+| `memory_history` | 看演化轨迹：改过几次、被谁取代、取代链走到哪 |
+| `memory_rule` | 读 / 改规矩。**改规矩必须给 reason** |
+| `memory_stats` | 体检：判断数、规矩数、退役数、孤立项、数据问题 |
 
-### The three write outcomes
+### 写入的三种结果
 
 ```
-created     new judgment (no existing judgment on the same key)
-supersede   same (subject, relation) key, different object → old judgment retired but preserved
-duplicate   same key and same object → nothing is written to disk (one assertion needs no second card)
+created    新判断（没有同键的既有判断）
+supersede  同 (subject, relation) 键、不同 object → 旧判断退役但保留
+duplicate  同键同 object → 不落盘（同一断言不需要两份卡）
 ```
 
 ---
 
-## Data model
+## 数据模型
 
-### The ledger is the only source of truth (`~/.dsh/ai-memory/ledger.jsonl`)
+### 账本是唯一真相（`~/.dsh/ai-memory/ledger.jsonl`）
 
-Plain-text JSONL, **append-only, history is never rewritten**. Human-readable, git-diffable,
-deletable, and hand-editable.
+纯文本 JSONL，**只追加，永不重写历史**。人类可读、可 git diff、可 rm、可手工修。
 
-Seven event types:
+七种事件：
 
 ```
-node.created      new judgment / new rule
-node.revised      text changed (historical versions preserved; not a refutation)
-node.superseded   superseded (bi-temporal: closes the old node's valid_to, does not delete it)
-node.withdrawn    withdrawn (self-detected as wrong, but not superseded by anything)
-edge.linked       bidirectional link created
-edge.unlinked     bidirectional link removed
-rule.amended      rule changed (with a reason; auditable)
+node.created     新判断 / 新规矩
+node.revised     改文字（保留历史版本，不算推翻）
+node.superseded  被取代（双时态：关掉旧节点的 valid_to，不删）
+node.withdrawn   撤回（自己发现错了，但没被谁取代）
+edge.linked      建双链
+edge.unlinked    解除双链
+rule.amended     规矩变更（带理由，可审计）
 ```
 
-**Bi-temporal**: `validFrom`/`validTo` record **when the fact was true**, while `createdAt` records
-**when the system learned it**.
+**双时态**：`validFrom`/`validTo` 记录「事实何时为真」，`createdAt` 记录「系统何时知道」。
 
-### Everything derived is rebuildable
+### 派生的一切都可重建
 
-The graph, backlinks, the active set, and statistics — **all computed by folding the ledger**, and
-deleting them loses no information. This matches the official requirement: plugin memory is a
-derived cache.
+图谱、反链、活跃集、统计 —— **全部由 fold 账本算出**，删掉不丢信息。
+这正合官方要求：插件记忆是 derived cache。
 
 ---
 
-## Configuration
+## 配置
 
-Works with zero configuration. To change anything, override the config for the same id in the
-profile's `cordis.patch.yml` (the user patch layer is applied after the bundle layer and
-**survives upgrades**):
+默认零配置可用。想改就在 profile 的 `cordis.patch.yml` 里覆盖同一 id 的 config
+（用户补丁层在 bundle 层之后应用，且**跨升级存活**）：
 
 ```yaml
 - id: dsh-ai-memory
   name: dsh-ai-memory
   config:
-    dir: 'D:\my-memory'      # default ~/.dsh/ai-memory
-    injectIndex: true         # inject the judgment index at session start
-    maxIndexEntries: 40       # max judgments listed in the index
-    maxGraphNodes: 500        # max nodes in a graph snapshot
+    dir: 'D:\my-memory'      # 默认 ~/.dsh/ai-memory
+    injectIndex: true         # 会话开始注入判断索引
+    maxIndexEntries: 40       # 索引里最多列几条判断
+    maxGraphNodes: 500        # 图谱快照最多几个节点
     enabled: true
 ```
 
-| Key | Type | Default | Meaning |
+| 键 | 类型 | 默认 | 含义 |
 |---|---|---|---|
-| `dir` | string | `~/.dsh/ai-memory` | Memory store directory (holds `ledger.jsonl`) |
-| `injectIndex` | boolean | `true` | Inject the judgment index into the system prompt at session start |
-| `maxIndexEntries` | integer | `40` | Maximum judgments listed in the injected index |
-| `maxGraphNodes` | integer | `500` | Maximum nodes in a graph snapshot; beyond this the snapshot reports `truncated` |
-| `enabled` | boolean | `true` | When `false`, nothing is registered at all |
+| `dir` | string | `~/.dsh/ai-memory` | 记忆库目录（存放 `ledger.jsonl`） |
+| `injectIndex` | boolean | `true` | 会话开始时把判断索引注入 system prompt |
+| `maxIndexEntries` | integer | `40` | 注入索引里最多列几条判断 |
+| `maxGraphNodes` | integer | `500` | 图谱快照最多几个节点，超出时快照标 `truncated` |
+| `enabled` | boolean | `true` | 为 `false` 时什么都不注册 |
 
-The injected index lists rules first, then active judgments up to `maxIndexEntries` (newest first),
-then `insight` nodes on a smaller budget of `maxIndexEntries / 2` — insights are less load-bearing
-than judgments, and occupying more context would dilute the rules and judgments that matter. The
-index carries summaries, not full text; details are fetched on demand with `memory_search`.
+注入的索引先列规矩，再列活跃判断（最多 `maxIndexEntries` 条，最新优先），
+最后是 `insight` 节点，预算更小（`maxIndexEntries / 2`）—— 想法没有判断那么硬，
+占太多上下文会稀释真正要紧的规矩与判断。索引里带的是**摘要而非全文**，细节按需用 `memory_search` 取。
 
 ---
 
-## HTTP endpoints (graph panel data source)
+## HTTP 端点（图谱面板数据源）
 
-| Route | Returns |
+| 路由 | 返回 |
 |---|---|
-| `/plugins/dsh-ai-memory/snapshot` | Graph snapshot (nodes + edges + stats). `?retired=1` includes retired nodes |
-| `/plugins/dsh-ai-memory/node?id=<id>` | Detail for a single judgment (including backlinks, supersession chain, revision history) |
-| `/plugins/dsh-ai-memory/stats` | Statistics |
+| `/plugins/dsh-ai-memory/snapshot` | 图谱快照（节点 + 边 + 统计）。`?retired=1` 含退役节点 |
+| `/plugins/dsh-ai-memory/node?id=<id>` | 单条判断详情（含反链、取代链、修订史） |
+| `/plugins/dsh-ai-memory/stats` | 统计 |
 
-⚠️ **Security**: routes of the form `/plugins/<package-name>/...` **do not pass through** session
-cookie validation (that only covers `/api` and WebSocket). The endpoints therefore perform two
-checks themselves: **accept loopback origins only**, and **if an Origin header is present it must be
-same-origin with Host**. Anything non-loopback or cross-origin is rejected with 403.
-
----
-
-## Known boundaries (stated honestly)
-
-- **No index layer**: every call rescans the whole ledger, O(all events). Tens of thousands of
-  judgments would need an index; that is future work.
-- **No concurrency lock**: two concurrent writes can both pass their checks and then append in an
-  interleaved order (appends are atomic, so the worst case is an ordering problem, not lost data).
-- **Extraction is the caller's job**: this plugin does no natural-language extraction — the triple
-  is supplied by the model in `memory_write`. The academic side is explicit that **extraction
-  quality, not the supersession mechanism, is the bottleneck** (97% for structured single values vs
-  44% for messy natural language), and it is harder still in Chinese. This is the part the plugin
-  deliberately does not touch.
-- **The graph is a navigation layer**: nodes carry only a label (a summary), never the full text —
-  details are fetched on demand with `memory_search`. This is deliberate (context bloat dilutes
-  attention).
+⚠️ **安全**：`/plugins/<包名>/...` 这类路由**不经过**会话 cookie 校验
+（那条只覆盖 `/api` 与 WebSocket）。所以端点自己做两道检查：**只接受回环来源**、
+**Origin（若带）必须与 Host 同源**。非回环或跨源一律 403。
 
 ---
 
-## Install
+## 已知边界（诚实说明）
+
+- **无索引层**：每次调用重扫整个账本，O(全部事件)。判断数到万级需要加索引，那是后续工作。
+- **无并发锁**：两个并发写可能都通过检查后互相追加（追加是原子的，所以最坏是顺序问题，不是丢数据）。
+- **抽取靠调用方**：本插件不做自然语言抽取 —— 三元组由模型在 `memory_write` 时给出。
+  学术侧明确：**抽取质量而非取代机制才是瓶颈**（结构化单值 97%，混乱自然语言 44%），
+  中文场景更难。这是本插件刻意不碰的部分。
+- **图谱是导航层**：节点只带 label（摘要），不带全文 —— 细节按需 `memory_search` 取。
+  这是刻意的（上下文膨胀会稀释注意力）。
+
+---
+
+## 安装
 
 ```powershell
-plugin_manager action=install_bundle target=<absolute path to this directory>
+plugin_manager action=install_bundle target=<本目录的绝对路径>
 ```
 
-Do not hand-edit the profile's `package.json` or `cordis.patch.yml`, and do not run pnpm inside the
-profile directory — `install_bundle` handles both the package install and the bundle selection.
+不要手改 profile 的 `package.json` 或 `cordis.patch.yml`，也不要在 profile 目录里跑 pnpm ——
+`install_bundle` 会同时处理包安装与 bundle 选择。
 
-To disable or remove later (memory data is preserved either way):
+之后要停用或移除（两种情况都保留记忆数据）：
 
 ```powershell
 plugin_manager action=set_bundle target=dsh-ai-memory enabled=false
 plugin_manager action=remove_bundle target=dsh-ai-memory
 ```
 
-### ⚠️ The host must be restarted once after install
+### ⚠️ 装上之后要重启一次宿主
 
-The **host half** (tools, injection, HTTP routes) takes effect immediately through HMR; the
-**client half** (the graph panel) **requires a DSH restart**. The host collects `dsh.client` entries
-during a startup scan, so a bundle installed after startup is not in that generation of JavaScript;
-the browser therefore cannot get its `client.js`, **and no error is reported**.
+**宿主半边**（工具、注入、HTTP 路由）通过 HMR 立即生效；
+**客户端半边**（图谱面板）需要**重启 DSH** —— 宿主在启动扫描时收集 `dsh.client` 条目，
+启动后才装的 bundle 不在那一代 JavaScript 里，浏览器因此拿不到它的 `client.js`，**且不报错**。
 
-After the restart, refresh the page and the judgment graph panel appears in the sidebar.
-`node test/bundle-served.mjs` confirms whether the client bundle has entered the host's serving
-table.
+重启后刷新页面，侧边栏会出现「判断图谱」图标。
+用 `node test/bundle-served.mjs` 可以确认客户端 bundle 是否已进入宿主的服务表。
 
 ---
 
-## Development
+## 开发
 
 ```powershell
 cd dsh-plugins\plugins\dsh-ai-memory
-node --test "test/**/*.test.js"   # unit tests (281)
-node test/e2e.mjs                 # end-to-end lifecycle verification (40)
-node test/manifest-check.mjs      # manifest + hard-constraint self-check
-node test/bundle-served.mjs       # is the client bundle served by the host (--all adds a control)
+node --test "test/**/*.test.js"   # 单元测试（281 项）
+node test/e2e.mjs                 # 端到端生命周期验证（40 项）
+node test/manifest-check.mjs      # 语法 + 清单 + 硬约束自查
+node test/bundle-served.mjs       # 客户端 bundle 是否已被宿主服务（--all 带对照）
 ```
 
-The glob form is **required** for the unit tests: Node's default discovery would also run the
-long-lived helper servers under `test/`.
+单元测试**必须**用这个 glob 形式：Node 的默认发现规则会把 `test/` 下的常驻辅助服务
+也当成测试跑，进程不会退出。
 
-**Zero external dependencies** is a hard constraint: installed into a profile via `link:`, the
-plugin gets no `node_modules` of its own (two sibling plugins hit this, and it presents as "works
-when installed, gone after a restart"). Tool definitions are therefore hand-written JSON Schema and
-configuration is validated in-house.
+**零外部依赖**是硬约束：插件以 `link:` 装进 profile 时拿不到自己的 `node_modules`
+（两个同类插件都踩过，表现为"装的时候好使，一重启就没了"）。
+所以工具定义手写 JSON Schema，配置自己校验。
 
 ---
 
-## License
+## 许可
 
-MIT — see [LICENSE](./LICENSE).
+MIT —— 见 [LICENSE](./LICENSE)。

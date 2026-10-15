@@ -46,12 +46,12 @@ export function parseLedger(text) {
     try {
       const ev = JSON.parse(line)
       if (ev === null || typeof ev !== 'object' || Array.isArray(ev)) {
-        problems.push({ line: i + 1, reason: 'not an object' })
+        problems.push({ line: i + 1, reason: '不是对象' })
         continue
       }
       events.push(ev)
     } catch (err) {
-      problems.push({ line: i + 1, reason: `JSON parse failed: ${err.message}` })
+      problems.push({ line: i + 1, reason: `JSON 解析失败：${err.message}` })
     }
   }
   // Stable sort by seq: hand edits can insert lines in the wrong place, and sorting makes the fold result independent of write order.
@@ -99,13 +99,13 @@ export function appendEvents(filePath, events) {
   try {
     mkdirSync(dirname(filePath), { recursive: true })
   } catch (err) {
-    return { ok: false, reason: `cannot create directory: ${err.message}`, appended: 0 }
+    return { ok: false, reason: `无法建目录：${err.message}`, appended: 0 }
   }
   try {
     appendFileSync(filePath, serializeLedger(events), 'utf8')
     return { ok: true, appended: events.length }
   } catch (err) {
-    return { ok: false, reason: `append failed: ${err.message}`, appended: 0 }
+    return { ok: false, reason: `追加失败：${err.message}`, appended: 0 }
   }
 }
 
@@ -133,14 +133,14 @@ export function atomicWrite(filePath, content, expectedMtimeMs) {
   try {
     mkdirSync(dirname(filePath), { recursive: true })
   } catch (err) {
-    return { ok: false, reason: `cannot create directory: ${err.message}` }
+    return { ok: false, reason: `无法建目录：${err.message}` }
   }
 
   const tmp = join(dirname(filePath), `.${LEDGER_FILE}.${process.pid}.${Date.now().toString(36)}.tmp`)
   try {
     writeFileSync(tmp, content, 'utf8')
   } catch (err) {
-    return { ok: false, reason: `writing the temporary file failed: ${err.message}` }
+    return { ok: false, reason: `写临时文件失败：${err.message}` }
   }
 
   // Second check: covers external changes made during the temp-write window.
@@ -153,7 +153,7 @@ export function atomicWrite(filePath, content, expectedMtimeMs) {
     renameSync(tmp, filePath)
   } catch (err) {
     try { unlinkSync(tmp) } catch { /* as above */ }
-    return { ok: false, reason: `rename failed: ${err.message}` }
+    return { ok: false, reason: `rename 失败：${err.message}` }
   }
   return { ok: true }
 }

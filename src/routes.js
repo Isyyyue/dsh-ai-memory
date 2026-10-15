@@ -93,12 +93,12 @@ export function createRoutes(lib, opts = {}) {
     }
 
     if (!isLoopback(req.socket?.remoteAddress)) {
-      deny(403, 'loopback requests only')
+      deny(403, '只接受本机回环请求')
       return
     }
     const origin = req.headers?.origin
     if (typeof origin === 'string' && origin !== '' && !originMatchesHost(origin, req.headers?.host)) {
-      deny(403, 'Origin and Host are not same-origin')
+      deny(403, 'Origin 与 Host 不同源')
       return
     }
 
@@ -106,7 +106,7 @@ export function createRoutes(lib, opts = {}) {
     try {
       payload = produce(new URL(req.url ?? '/', 'http://localhost'))
     } catch (err) {
-      deny(500, `reading the memory store failed: ${err.message}`)
+      deny(500, `读取记忆库失败：${err.message}`)
       return
     }
     res.statusCode = 200
@@ -138,7 +138,7 @@ export function createRoutes(lib, opts = {}) {
           const id = url.searchParams.get('id') ?? ''
           const { state } = lib.load()
           const detail = nodeDetail(state, id)
-          if (detail === null) return { ok: false, error: `judgment not found: ${id}` }
+          if (detail === null) return { ok: false, error: `找不到判断 ${id}` }
           return { ok: true, node: detail }
         })
       },

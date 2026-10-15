@@ -90,8 +90,8 @@ function fakeCtx(opts = {}) {
   return { ctx, rec }
 }
 
-describe('apply() · the tools really are registered (guarding against silent failure)', () => {
-  test('all six tools are registered, with the right names', () => {
+describe('apply() · 工具真的注册了（防静默失效）', () => {
+  test('六个工具全部注册，名字正确', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a1') })
     const names = rec.tools.map((t) => t.name).sort()
@@ -105,62 +105,62 @@ describe('apply() · the tools really are registered (guarding against silent fa
     ])
   })
 
-  test('every tool has description / parameters / output.schema / execute', () => {
+  test('每个工具都有 description / parameters / output.schema / execute', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a2') })
     for (const t of rec.tools) {
-      assert.ok(typeof t.description === 'string' && t.description.length > 0, `${t.name} is missing description`)
-      assert.ok(t.parameters !== null && typeof t.parameters === 'object', `${t.name} is missing parameters`)
-      assert.ok(t.output !== null && typeof t.output === 'object', `${t.name} is missing output`)
-      assert.ok(t.output.schema !== null && typeof t.output.schema === 'object', `${t.name} is missing output.schema`)
-      assert.equal(typeof t.output.render, 'function', `${t.name} is missing output.render`)
-      assert.equal(typeof t.execute, 'function', `${t.name} is missing execute`)
+      assert.ok(typeof t.description === 'string' && t.description.length > 0, `${t.name} 缺 description`)
+      assert.ok(t.parameters !== null && typeof t.parameters === 'object', `${t.name} 缺 parameters`)
+      assert.ok(t.output !== null && typeof t.output === 'object', `${t.name} 缺 output`)
+      assert.ok(t.output.schema !== null && typeof t.output.schema === 'object', `${t.name} 缺 output.schema`)
+      assert.equal(typeof t.output.render, 'function', `${t.name} 缺 output.render`)
+      assert.equal(typeof t.execute, 'function', `${t.name} 缺 execute`)
     }
   })
 
-  test('parameters is a valid JSON Schema object root (dsh-tools accepts only this subset)', () => {
+  test('parameters 是合法 JSON Schema 对象根（dsh-tools 只收这个子集）', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a3') })
     for (const t of rec.tools) {
-      assert.equal(t.parameters.type, 'object', `${t.name}'s parameters must be an object root`)
+      assert.equal(t.parameters.type, 'object', `${t.name} 的 parameters 必须是 object 根`)
       // Subset limit: oneOf/anyOf/allOf/$ref are unsupported.
       const json = JSON.stringify(t.parameters)
       for (const banned of ['"oneOf"', '"anyOf"', '"allOf"', '"$ref"']) {
-        assert.ok(!json.includes(banned), `${t.name} uses the unsupported JSON Schema keyword ${banned}`)
+        assert.ok(!json.includes(banned), `${t.name} 用了不支持的 JSON Schema 关键字 ${banned}`)
       }
     }
   })
 
-  test('the registered tools really execute (they are not empty shells)', () => {
+  test('注册的工具真的可执行（不是空壳）', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a4') })
     const byName = new Map(rec.tools.map((t) => [t.name, t]))
     // Walk one real "write → search → stats" loop.
-    const w = byName.get('memory_write').execute({ text: '\u6211\u8ba4\u4e3a\u53d6\u4ee3\u4f18\u4e8e\u76f8\u4f3c\u5ea6', subject: 'x', relation: 'y', object: '1' })
+    const w = byName.get('memory_write').execute({ text: '我认为取代优于相似度', subject: 'x', relation: 'y', object: '1' })
     assert.equal(w.action, 'created')
-    const s = byName.get('memory_search').execute({ query: '\u53d6\u4ee3' })
+    const s = byName.get('memory_search').execute({ query: '取代' })
     assert.ok(s.total >= 1)
     const st = byName.get('memory_stats').execute({})
     assert.equal(st.judgments, 1)
   })
 
-  test('the injection section is registered, and its text is a lazy function', () => {
+  test('注入 section 注册了，且 text 是惰性函数', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a5') })
     assert.equal(rec.sections.length, 1)
     assert.equal(rec.sections[0].name, 'dsh-ai-memory:index')
-    assert.equal(typeof rec.sections[0].text, 'function', 'text must be a function (lazy disk read)')
-    assert.equal(rec.sections[0].interpolate, false, 'interpolation must be off, or a {{}} in the body blows up the whole prompt')
+    assert.equal(typeof rec.sections[0].text, 'function', 'text 必须是函数（惰性读盘）')
+    assert.equal(rec.sections[0].interpolate, false, '必须关掉插值，否则正文里的 {{}} 会炸整个 prompt')
   })
 
-  test('with injectIndex: false no injection is registered, but the tools are unaffected', () => {
+  test('injectIndex: false 时不注册注入，但工具照常', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a6'), injectIndex: false })
     assert.equal(rec.sections.length, 0)
-    assert.equal(rec.tools.length, 6, 'turning injection off must not affect the tools')
+    assert.equal(rec.tools.length, 6, '关注入不该影响工具')
   })
 
-  test('with enabled: false nothing is registered', () => {
+  test('enabled: false 时什么都不注册', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a7'), enabled: false })
     assert.equal(rec.tools.length, 0)
@@ -168,16 +168,16 @@ describe('apply() · the tools really are registered (guarding against silent fa
   })
 })
 
-describe('apply() · webServer is a scoped optional dependency (critical)', () => {
-  test('with no webServer the tools are registered **anyway** (the plugin must not fail to activate)', () => {
+describe('apply() · webServer 是局部可选依赖（关键）', () => {
+  test('没有 webServer 时，工具**照样**注册（不该整条不激活）', () => {
     const { ctx, rec } = fakeCtx({ withWebServer: false })
     apply(ctx, { dir: join(work, 'b1') })
-    assert.equal(rec.tools.length, 6, 'a missing webServer must not make the tools disappear')
+    assert.equal(rec.tools.length, 6, '缺 webServer 不能让工具消失')
     assert.equal(rec.sections.length, 1)
     assert.equal(rec.routes.length, 0)
   })
 
-  test('with a webServer, the three data routes are registered', () => {
+  test('有 webServer 时，三条数据路由注册了', () => {
     const { ctx, rec } = fakeCtx({ withWebServer: true })
     apply(ctx, { dir: join(work, 'b2') })
     assert.equal(rec.routes.length, 3)
@@ -189,33 +189,33 @@ describe('apply() · webServer is a scoped optional dependency (critical)', () =
     ])
   })
 
-  test('webServer goes through a scoped inject and is not in the required inject list', () => {
-    assert.ok(!inject.includes('webServer'), 'webServer must not be a hard dependency')
+  test('webServer 走的是局部 inject，不在必需 inject 列表里', () => {
+    assert.ok(!inject.includes('webServer'), 'webServer 不该是硬依赖')
     assert.deepEqual([...inject].sort(), ['systemPrompt', 'tools'])
   })
 
-  test('the declared service names and the plugin name follow the convention', () => {
+  test('注入声明的服务名与插件名符合约定', () => {
     assert.equal(name, 'dsh-ai-memory')
   })
 })
 
-describe('apply() · the injected text really is produced', () => {
-  test('after writing a judgment, the injected text contains it', () => {
+describe('apply() · 注入文本真的能生成', () => {
+  test('写一条判断后，注入文本包含它', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'c1') })
     const byName = new Map(rec.tools.map((t) => [t.name, t]))
-    byName.get('memory_write').execute({ text: '\u56fe\u8c31\u53ea\u505a\u5bfc\u822a\u4e0d\u505a\u4e8b\u5b9e\u8f7d\u8377' })
+    byName.get('memory_write').execute({ text: '图谱只做导航不做事实载荷' })
     const text = rec.sections[0].text()
-    assert.match(text, /\u56fe\u8c31\u53ea\u505a\u5bfc\u822a/)
+    assert.match(text, /图谱只做导航/)
   })
 
-  test('an empty store injects an empty string (costing no context)', () => {
+  test('空库时注入空串（不占上下文）', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'c2') })
     assert.equal(rec.sections[0].text(), '')
   })
 
-  test('a corrupt memory store degrades to an empty string without throwing (a broken store must not stall a session)', () => {
+  test('记忆库损坏时注入降级为空串，不抛（不能因为记忆坏了让会话跑不动）', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'c3') })
     // Produce a corruption scenario where reading from disk fails.

@@ -91,11 +91,11 @@ export function createState() {
  */
 export function applyEvent(state, ev) {
   if (ev === null || typeof ev !== 'object') {
-    state.problems.push({ at: 'fold', reason: 'event is not an object', raw: ev })
+    state.problems.push({ at: 'fold', reason: '事件不是对象', raw: ev })
     return state
   }
   if (!EVENT_TYPES.includes(ev.type)) {
-    state.problems.push({ at: 'fold', reason: `unknown event type ${String(ev.type)}`, seq: ev.seq })
+    state.problems.push({ at: 'fold', reason: `未知事件类型 ${String(ev.type)}`, seq: ev.seq })
     return state
   }
   const d = ev.data ?? {}
@@ -105,7 +105,7 @@ export function applyEvent(state, ev) {
     case 'node.created': {
       const id = typeof d.id === 'string' && d.id !== '' ? d.id : `n_${String(ev.seq ?? 0).padStart(4, '0')}`
       if (state.nodes.has(id)) {
-        state.problems.push({ at: 'fold', reason: `duplicate node id: ${id}`, seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: `节点 id 重复：${id}`, seq: ev.seq })
         break
       }
       state.nodes.set(id, {
@@ -125,7 +125,7 @@ export function applyEvent(state, ev) {
         supersededBy: null,
         status: STATUS.ACTIVE,
         revision: 1,
-        history: [{ at, text: typeof d.text === 'string' ? d.text : '', reason: 'created' }],
+        history: [{ at, text: typeof d.text === 'string' ? d.text : '', reason: '建立' }],
       })
       break
     }
@@ -133,7 +133,7 @@ export function applyEvent(state, ev) {
     case 'node.revised': {
       const n = state.nodes.get(d.id)
       if (n === undefined) {
-        state.problems.push({ at: 'fold', reason: `text revision points at a missing node: ${String(d.id)}`, seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: `改文字指向不存在的节点：${String(d.id)}`, seq: ev.seq })
         break
       }
       const before = n.text
@@ -142,7 +142,7 @@ export function applyEvent(state, ev) {
       if (typeof d.relation === 'string' && d.relation !== '') n.relation = d.relation
       if (typeof d.object === 'string' && d.object !== '') n.object = d.object
       n.revision += 1
-      n.history.push({ at, text: n.text, before, reason: typeof d.reason === 'string' ? d.reason : 'revised' })
+      n.history.push({ at, text: n.text, before, reason: typeof d.reason === 'string' ? d.reason : '修订' })
       break
     }
 
@@ -152,7 +152,7 @@ export function applyEvent(state, ev) {
       if (old === undefined || by === undefined) {
         state.problems.push({
           at: 'fold',
-          reason: `supersession points at a missing node: ${String(d.id)} → ${String(d.byId)}`,
+          reason: `取代指向不存在的节点：${String(d.id)} → ${String(d.byId)}`,
           seq: ev.seq,
         })
         break
@@ -161,19 +161,19 @@ export function applyEvent(state, ev) {
       old.status = STATUS.SUPERSEDED
       old.validTo = at
       old.supersededBy = by.id
-      old.history.push({ at, text: old.text, reason: `superseded by ${by.id}: ${String(d.reason ?? '')}` })
+      old.history.push({ at, text: old.text, reason: `被 ${by.id} 取代：${String(d.reason ?? '')}` })
       break
     }
 
     case 'node.withdrawn': {
       const n = state.nodes.get(d.id)
       if (n === undefined) {
-        state.problems.push({ at: 'fold', reason: `withdrawal points at a missing node: ${String(d.id)}`, seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: `撤回指向不存在的节点：${String(d.id)}`, seq: ev.seq })
         break
       }
       n.status = STATUS.WITHDRAWN
       n.validTo = at
-      n.history.push({ at, text: n.text, reason: `withdrawn: ${String(d.reason ?? '')}` })
+      n.history.push({ at, text: n.text, reason: `撤回：${String(d.reason ?? '')}` })
       break
     }
 
@@ -183,13 +183,13 @@ export function applyEvent(state, ev) {
       if (from === undefined || to === undefined) {
         state.problems.push({
           at: 'fold',
-          reason: `link points at a missing node: ${String(d.from)} → ${String(d.to)}`,
+          reason: `双链指向不存在的节点：${String(d.from)} → ${String(d.to)}`,
           seq: ev.seq,
         })
         break
       }
       if (from.id === to.id) {
-        state.problems.push({ at: 'fold', reason: 'self-links are not allowed', seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: '不允许自连', seq: ev.seq })
         break
       }
       // Dedup key = from + to + type, so one node pair can carry several relations (a complement and a tension can coexist).
@@ -219,7 +219,7 @@ export function applyEvent(state, ev) {
       // Rules are carried by nodes (kind: 'rule'); the reason and the before/after text stay in the event, so changes are auditable and rollback-able.
       const n = state.nodes.get(d.id)
       if (n === undefined) {
-        state.problems.push({ at: 'fold', reason: `rule amendment points at a missing node: ${String(d.id)}`, seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: `规则变更指向不存在的节点：${String(d.id)}`, seq: ev.seq })
         break
       }
       const before = n.text
@@ -229,7 +229,7 @@ export function applyEvent(state, ev) {
         at,
         text: n.text,
         before,
-        reason: typeof d.reason === 'string' ? d.reason : 'rule amended',
+        reason: typeof d.reason === 'string' ? d.reason : '规则变更',
         amendment: true,
       })
       break
