@@ -1,10 +1,11 @@
 /**
- * 逐条列出边，并把**它会被画成什么颜色**一起标出来。
+ * List every edge and mark **what color it will be drawn in**.
  *
- * 主人问过「为什么出现绿色的线」—— 绿 = `complements`（互补）。
- * 这个脚本让人一眼看清：哪条边是什么类型、什么颜色、连的是谁。
+ * The question "why is there a green line" came up: green = `complements`.
+ * This script makes it obvious at a glance which edge is which type, what color
+ * it gets, and what it connects.
  *
- * 用法：node test/edge-colors.mjs
+ * Usage: node test/edge-colors.mjs
  */
 
 import { homedir } from 'node:os'
@@ -12,12 +13,12 @@ import { join } from 'node:path'
 import { openLibrary } from '../src/index.js'
 import { buildSnapshot } from '../src/graph.js'
 
-/** 与客户端 `edgeColor()` 保持一致（改了那边要一起改）。 */
+/** Kept in sync with the client `edgeColor()` (change both together). */
 const COLOR_OF = {
-  supersedes: '蓝（品牌色）—— 新的取代旧的，带箭头',
-  complements: '绿 —— 互补，两条判断互相印证',
-  tensions: '红 —— 矛盾，两条判断互相冲突',
-  depends: '琥珀 —— 依据，一条依赖另一条',
+  supersedes: 'blue (brand) — the new one supersedes the old, drawn with an arrowhead',
+  complements: 'green — complement, two judgments reinforcing each other',
+  tensions: 'red — tension, two judgments conflicting',
+  depends: 'amber — depends-on, one relying on the other',
 }
 
 const lib = openLibrary(join(homedir(), '.dsh', 'ai-memory'))
@@ -25,13 +26,13 @@ const { state } = lib.load()
 
 const brief = (id) => {
   const n = state.nodes.get(id)
-  if (n === undefined) return `${id}(不存在)`
+  if (n === undefined) return `${id}(missing)`
   return `[${n.status}] ${n.text.slice(0, 26)}`
 }
 
-console.log(`=== 共 ${state.edges.length} 条边 ===\n`)
+console.log(`=== ${state.edges.length} edge(s) ===\n`)
 for (const e of state.edges) {
-  const color = COLOR_OF[e.type] ?? '灰（未知类型）'
+  const color = COLOR_OF[e.type] ?? 'grey (unknown type)'
   console.log(`${e.type}  →  ${color}`)
   console.log(`   ${brief(e.from)}`)
   console.log(`   ${brief(e.to)}`)
@@ -39,7 +40,7 @@ for (const e of state.edges) {
 }
 
 const all = buildSnapshot(state, { includeRetired: true })
-console.log(`含退役视图: ${all.nodes.length} 节点 / ${all.edges.length} 边`)
+console.log(`view including retired: ${all.nodes.length} nodes / ${all.edges.length} edges`)
 const byType = {}
 for (const e of all.edges) byType[e.type] = (byType[e.type] ?? 0) + 1
-console.log('边类型分布:', JSON.stringify(byType))
+console.log('edge type distribution:', JSON.stringify(byType))

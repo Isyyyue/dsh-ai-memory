@@ -1,6 +1,6 @@
 /**
- * 装后核对：profile 里那份客户端是否含本轮全部修复。
- * 用法：node test/verify-profile.mjs
+ * Post-install check: whether the copy in the profile contains every fix from this round.
+ * Usage: node test/verify-profile.mjs
  */
 
 import { readFileSync } from 'node:fs'
@@ -11,26 +11,26 @@ const p = join(homedir(), '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-ai
 const s = readFileSync(p, 'utf8')
 
 let fails = 0
-/** 断言并打印。 */
+/** Assert and print. */
 function check(label, cond, extra = '') {
   if (cond) console.log(`  ✓ ${label}${extra ? ' — ' + extra : ''}`)
   else { fails += 1; console.log(`  ✗ ${label}${extra ? ' — ' + extra : ''}`) }
 }
 
-console.log(`\n【profile 里的客户端】${p}\n`)
-check('含内联 worker 源码（不依赖 rev）', s.includes('const WORKER_SOURCE = "'))
-check('有 workerBlobUrl（Blob 建 Worker）', s.includes('function workerBlobUrl()'))
-check('主线程拖拽兜底（没 Worker 也能拖）', s.includes('p.x = w.x') && s.includes('p.y = w.y'))
-check('workerError 会留下来（不静默）', s.includes('this.workerError = '))
-check('节点半径是常数（全部一样大）', /radiusOf\(_node\) \{\s*\n\s*return \d/.test(s))
-check('三种 kind 分色', s.includes('KIND_STYLE'))
-check('不读 ctx.styles', !/ctx\.styles/.test(s.replace(/\/\*[\s\S]*?\*\//g, '')))
+console.log(`\n[client copy in the profile] ${p}\n`)
+check('contains the inlined worker source (no rev dependency)', s.includes('const WORKER_SOURCE = "'))
+check('has workerBlobUrl (Blob-built Worker)', s.includes('function workerBlobUrl()'))
+check('main-thread drag fallback (dragging works without a Worker)', s.includes('p.x = w.x') && s.includes('p.y = w.y'))
+check('workerError is retained (not silent)', s.includes('this.workerError = '))
+check('the node radius is a constant (all nodes the same size)', /radiusOf\(_node\) \{\s*\n\s*return \d/.test(s))
+check('the three kinds are colour-coded', s.includes('KIND_STYLE'))
+check('does not read ctx.styles', !/ctx\.styles/.test(s.replace(/\/\*[\s\S]*?\*\//g, '')))
 
-// 内联的 worker 与真源一致吗
+// Does the inlined worker match the real source?
 const worker = readFileSync(join(homedir(), '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-ai-memory', 'lib', 'client.graph-worker.js'), 'utf8')
 const m = /const WORKER_SOURCE = "/.exec(s)
 if (m === null) {
-  check('内联 worker 与真源一致', false, '找不到字面量')
+  check('the inlined worker matches the real source', false, 'the literal was not found')
 } else {
   let i = m.index + m[0].length - 1
   const start = i
@@ -41,10 +41,10 @@ if (m === null) {
     i += 1
   }
   let inlined = null
-  try { inlined = JSON.parse(s.slice(start, i + 1)) } catch { /* 忽略 */ }
-  check('内联 worker 与真源一致', inlined === worker, `${inlined?.length ?? 'null'} vs ${worker.length}`)
+  try { inlined = JSON.parse(s.slice(start, i + 1)) } catch { /* ignore */ }
+  check('the inlined worker matches the real source', inlined === worker, `${inlined?.length ?? 'null'} vs ${worker.length}`)
 }
 
 console.log(`\n${'='.repeat(50)}`)
-if (fails > 0) { console.log(`失败 ${fails} 项`); process.exit(1) }
-console.log('profile 里是修复后的版本 ✓')
+if (fails > 0) { console.log(`${fails} item(s) failed`); process.exit(1) }
+console.log('the profile holds the fixed version ✓')

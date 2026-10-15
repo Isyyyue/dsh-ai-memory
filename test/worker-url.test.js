@@ -1,14 +1,17 @@
 /**
- * Worker URL 解析的**行为测试**（不是文本匹配）。
+ * **Behavioural** tests for worker URL resolution (not text matching).
  *
- * 为什么值得单独测：这里踩过一个**静默失效**级的坑 ——
- * 最初用 `document.currentScript.src` 取 rev，但官方 README 明说
+ * Why this deserves its own test file: it hit a **silent-failure**-class trap.
+ * The revision was originally read from `document.currentScript.src`, but the
+ * official README states plainly:
  *   "module side effects run at materialization"
- * 也就是 factory 在**首次使用**时才执行，那时 currentScript 已是 null。
- * 结果是 worker 404 → 面板悄悄退化成静态布局，**不报错**。
+ * — the factory only runs on **first use**, by which time currentScript is
+ * already null. The result was a 404 for the worker, so the panel quietly
+ * degraded to a static layout, **with no error raised**.
  *
- * 所以这里造一个**假的浏览器环境**（document + location + __DSH_BOOT__），
- * 真的把 client.js 跑起来，断言 `new Worker()` 收到的 URL 带正确的 rev。
+ * So a **fake browser environment** (document + location + __DSH_BOOT__) is
+ * built here, client.js is really executed in it, and the URL handed to
+ * `new Worker()` is asserted to carry the correct rev.
  */
 
 import { test, describe } from 'node:test'
@@ -21,7 +24,7 @@ import vm from 'node:vm'
 const here = dirname(fileURLToPath(import.meta.url))
 const CLIENT_PATH = join(here, '..', 'lib', 'client.js')
 
-/** 极简 React 替身。 */
+/** A minimal React stand-in. */
 function fakeReact() {
   return {
     createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat().filter((c) => c != null) }),
@@ -33,25 +36,27 @@ function fakeReact() {
 }
 
 /**
- * 直接从 client.js 里把 `WORKER_PATH` 的**计算过程**在给定环境下跑一遍。
+ * Run the **computation** behind `WORKER_PATH` directly out of client.js under
+ * the given environment.
  *
- * 做法：把 client.js 里 `resolveWorkerUrl` 与 `extractRev` 两个函数体抽出来，
- * 在同一个沙箱里求值。这样测的是**真实代码**，而不是复制品。
+ * Approach: extract the bodies of `resolveWorkerUrl` and `extractRev` from
+ * client.js and evaluate them in the same sandbox. That tests the **real code**
+ * rather than a copy of it.
  *
- * @param {object} env - 同 loadAndCaptureWorkerUrl。
- * @returns {string|null} 解析出的 worker 路径。
+ * @param {object} env - Same as loadAndCaptureWorkerUrl.
+ * @returns {string|null} The resolved worker path.
  */
 function evalWorkerPath(env) {
   const code = readFileSync(CLIENT_PATH, 'utf8')
 
-  // 抽出两个函数（它们内部不依赖模块级变量，除了 WORKER_FILE 常量）
+  // Extract the two functions (they depend on no module-level variable except the WORKER_FILE constant)
   const workerFileMatch = /const WORKER_FILE = '([^']+)'/.exec(code)
-  assert.ok(workerFileMatch, '应当能找到 WORKER_FILE 常量')
+  assert.ok(workerFileMatch, 'the WORKER_FILE constant should be findable')
 
   const resolveMatch = /function resolveWorkerUrl\(\)\s*\{[\s\S]*?\n    \}/.exec(code)
-  assert.ok(resolveMatch, '应当能找到 resolveWorkerUrl')
+  assert.ok(resolveMatch, 'resolveWorkerUrl should be findable')
   const extractMatch = /function extractRev\(url\)\s*\{[\s\S]*?\n    \}/.exec(code)
-  assert.ok(extractMatch, '应当能找到 extractRev')
+  assert.ok(extractMatch, 'extractRev should be findable')
 
   const scripts = (env.scriptSrcs ?? []).map((src) => ({ src }))
   const sandbox = {
@@ -79,24 +84,24 @@ function evalWorkerPath(env) {
 
 const GOOD_REV = '3d1f70cdc176'
 
-describe('worker URL 解析 · 行为（防静默失效）', () => {
-  test('currentScript 可用时直接取 rev（脚本立即 materialize 的路径）', () => {
+describe('worker URL resolution · behaviour (guarding against silent failure)', () => {
+  test('when currentScript is available the rev is read from it directly (the path where the script materializes immediately)', () => {
     const url = evalWorkerPath({
       currentScriptSrc: `http://127.0.0.1:19387/plugins/??dsh-ai-memory/client.js&rev=${GOOD_REV}`,
     })
     assert.equal(url, `/plugins/dsh-ai-memory/client.graph-worker.js?rev=${GOOD_REV}`)
   })
 
-  test('**currentScript 为 null 时也能取到**（惰性执行的真实场景）', () => {
+  test('**the rev is still found when currentScript is null** (the real lazy-execution case)', () => {
     const url = evalWorkerPath({
       currentScriptSrc: null,
       scriptSrcs: [`http://127.0.0.1:19387/plugins/??dsh-ai-memory/client.js&rev=${GOOD_REV}`],
     })
     assert.equal(url, `/plugins/dsh-ai-memory/client.graph-worker.js?rev=${GOOD_REV}`,
-      'factory 惰性执行时 currentScript 是 null，必须能从 script 标签反查到 rev')
+      'when the factory runs lazily currentScript is null, so the rev must be recoverable from the script tag')
   })
 
-  test('script 标签也没有时，从 __DSH_BOOT__ 取（最后一道）', () => {
+  test('when there is no script tag either, the rev comes from __DSH_BOOT__ (the last resort)', () => {
     const url = evalWorkerPath({
       currentScriptSrc: null,
       scriptSrcs: [],
@@ -108,16 +113,16 @@ describe('worker URL 解析 · 行为（防静默失效）', () => {
       },
     })
     assert.equal(url, `/plugins/dsh-ai-memory/client.graph-worker.js?rev=${GOOD_REV}`,
-      '应当能在启动载荷里找到自己那一行')
+      'its own line should be findable in the boot payload')
   })
 
-  test('全都没有时退化为无 rev（面板走兜底布局，不是白屏）', () => {
+  test('when none is available it degrades to no rev (the panel uses the fallback layout, not a blank screen)', () => {
     const url = evalWorkerPath({ currentScriptSrc: null, scriptSrcs: [], boot: { entries: [] } })
     assert.equal(url, '/plugins/dsh-ai-memory/client.graph-worker.js',
-      '取不到 rev 也要给出可用的路径（虽然会 404，但面板不崩）')
+      'a usable path is still produced without a rev (it will 404, but the panel does not crash)')
   })
 
-  test('script 标签里混着别的插件时不会取错 rev', () => {
+  test('it does not pick the wrong rev when other plugins are among the script tags', () => {
     const url = evalWorkerPath({
       currentScriptSrc: null,
       scriptSrcs: [
@@ -126,11 +131,11 @@ describe('worker URL 解析 · 行为（防静默失效）', () => {
         `http://127.0.0.1:19387/plugins/??dsh-ai-memory/client.js&rev=${GOOD_REV}`,
       ],
     })
-    assert.ok(url.includes(GOOD_REV), `必须挑出自己那一条，实际 ${url}`)
-    assert.ok(!url.includes('deadbeef'), '不能取到别的插件的 rev')
+    assert.ok(url.includes(GOOD_REV), `it must pick out its own line; actual ${url}`)
+    assert.ok(!url.includes('deadbeef'), 'it must not pick up another plugin rev')
   })
 
-  test('分块形状（?rev=）也能解析', () => {
+  test('the chunk shape (?rev=) is parsed as well', () => {
     const url = evalWorkerPath({
       currentScriptSrc: null,
       scriptSrcs: [`http://127.0.0.1:19387/plugins/dsh-ai-memory/client.js?rev=${GOOD_REV}`],
@@ -138,15 +143,15 @@ describe('worker URL 解析 · 行为（防静默失效）', () => {
     assert.equal(url, `/plugins/dsh-ai-memory/client.graph-worker.js?rev=${GOOD_REV}`)
   })
 
-  test('畸形 URL 不抛异常，退化为无 rev', () => {
+  test('a malformed URL does not throw; it degrades to no rev', () => {
     assert.doesNotThrow(() => evalWorkerPath({ currentScriptSrc: 'not a url at all', scriptSrcs: ['::::'] }))
     const url = evalWorkerPath({ currentScriptSrc: 'not a url', scriptSrcs: ['::::'] })
     assert.equal(url, '/plugins/dsh-ai-memory/client.graph-worker.js')
   })
 
-  test('worker 文件名与路径前缀正确', () => {
+  test('the worker file name and path prefix are correct', () => {
     const url = evalWorkerPath({ currentScriptSrc: null })
-    assert.ok(url.startsWith('/plugins/dsh-ai-memory/'), `路径前缀要对，实际 ${url}`)
-    assert.ok(url.includes('client.graph-worker.js'), '文件名要对（必须带 client. 前缀）')
+    assert.ok(url.startsWith('/plugins/dsh-ai-memory/'), `the path prefix must be right; actual ${url}`)
+    assert.ok(url.includes('client.graph-worker.js'), 'the file name must be right (it must carry the client. prefix)')
   })
 })

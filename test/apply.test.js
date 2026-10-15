@@ -1,15 +1,17 @@
 /**
- * apply() 的接线测试 —— 专门抓"静默失效"。
+ * Wiring tests for apply() — aimed squarely at "silent failure".
  *
- * 这是本插件最危险的一类 bug：插件装了、不报错、但一个工具都没注册。
- * viya-memory 亲身踩过：`apply()` 用了 `ctx.systemPrompt` 却没写进 `inject`，
- * 于是整条插件不激活，而 mock ctx 自测全绿也抓不到。
+ * This is the most dangerous class of bug in the plugin: the plugin is installed,
+ * nothing errors, and not one tool got registered. viya-memory hit this for real:
+ * `apply()` used `ctx.systemPrompt` without declaring it in `inject`, so the whole
+ * plugin failed to activate, while mock-ctx self-tests stayed green and could not
+ * catch it.
  *
- * 所以这里**真的调用 apply()**，并断言：
- *   - 六个工具真的注册了（名字对得上）
- *   - 注入 section 真的注册了
- *   - webServer 缺席时，工具**照样**注册（局部可选依赖）
- *   - enabled:false 时什么都不注册
+ * So this file **really calls apply()** and asserts:
+ *   - the six tools are really registered (names match)
+ *   - the injection section is really registered
+ *   - with no webServer, the tools are registered **anyway** (a scoped optional dependency)
+ *   - with enabled:false, nothing is registered
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -27,17 +29,18 @@ before(() => {
 })
 
 after(() => {
-  try { rmSync(work, { recursive: true, force: true }) } catch { /* 忽略 */ }
+  try { rmSync(work, { recursive: true, force: true }) } catch { /* ignore */ }
 })
 
 /**
- * 造一个**记录型**假 ctx。
+ * Build a **recording** fake ctx.
  *
- * 刻意不实现真实 cordis 语义，只记录调用 —— 目的是证明"注册动作真的发生了"，
- * 而不是证明 cordis 本身工作正常（那是官方的事）。
+ * It deliberately does not implement real cordis semantics; it only records calls.
+ * The point is to prove that the registration actually happened, not that cordis
+ * itself works (that is the official project's concern).
  *
- * @param {{withWebServer?: boolean}} [opts] - 是否提供 webServer。
- * @returns {object} 假 ctx 与记录。
+ * @param {{withWebServer?: boolean}} [opts] - whether to provide a webServer.
+ * @returns {object} the fake ctx and its records.
  */
 function fakeCtx(opts = {}) {
   const rec = { tools: [], sections: [], routes: [], effects: 0, injects: [] }
@@ -78,7 +81,7 @@ function fakeCtx(opts = {}) {
   })
 
   const ctx = makeScope(opts.withWebServer === true)
-  // ctx.inject(services, cb) —— 只有全部服务都在时才回调（cordis 语义）。
+  // ctx.inject(services, cb) — the callback runs only when every service is present (cordis semantics).
   ctx.inject = (services, cb) => {
     rec.injects.push(services)
     const allPresent = services.every((s) => ctx.get(s) !== undefined)
@@ -87,8 +90,8 @@ function fakeCtx(opts = {}) {
   return { ctx, rec }
 }
 
-describe('apply() · 工具真的注册了（防静默失效）', () => {
-  test('六个工具全部注册，名字正确', () => {
+describe('apply() · the tools really are registered (guarding against silent failure)', () => {
+  test('all six tools are registered, with the right names', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a1') })
     const names = rec.tools.map((t) => t.name).sort()
@@ -102,62 +105,62 @@ describe('apply() · 工具真的注册了（防静默失效）', () => {
     ])
   })
 
-  test('每个工具都有 description / parameters / output.schema / execute', () => {
+  test('every tool has description / parameters / output.schema / execute', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a2') })
     for (const t of rec.tools) {
-      assert.ok(typeof t.description === 'string' && t.description.length > 0, `${t.name} 缺 description`)
-      assert.ok(t.parameters !== null && typeof t.parameters === 'object', `${t.name} 缺 parameters`)
-      assert.ok(t.output !== null && typeof t.output === 'object', `${t.name} 缺 output`)
-      assert.ok(t.output.schema !== null && typeof t.output.schema === 'object', `${t.name} 缺 output.schema`)
-      assert.equal(typeof t.output.render, 'function', `${t.name} 缺 output.render`)
-      assert.equal(typeof t.execute, 'function', `${t.name} 缺 execute`)
+      assert.ok(typeof t.description === 'string' && t.description.length > 0, `${t.name} is missing description`)
+      assert.ok(t.parameters !== null && typeof t.parameters === 'object', `${t.name} is missing parameters`)
+      assert.ok(t.output !== null && typeof t.output === 'object', `${t.name} is missing output`)
+      assert.ok(t.output.schema !== null && typeof t.output.schema === 'object', `${t.name} is missing output.schema`)
+      assert.equal(typeof t.output.render, 'function', `${t.name} is missing output.render`)
+      assert.equal(typeof t.execute, 'function', `${t.name} is missing execute`)
     }
   })
 
-  test('parameters 是合法 JSON Schema 对象根（dsh-tools 只收这个子集）', () => {
+  test('parameters is a valid JSON Schema object root (dsh-tools accepts only this subset)', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a3') })
     for (const t of rec.tools) {
-      assert.equal(t.parameters.type, 'object', `${t.name} 的 parameters 必须是 object 根`)
-      // 子集限制：不支持 oneOf/anyOf/allOf/$ref
+      assert.equal(t.parameters.type, 'object', `${t.name}'s parameters must be an object root`)
+      // Subset limit: oneOf/anyOf/allOf/$ref are unsupported.
       const json = JSON.stringify(t.parameters)
       for (const banned of ['"oneOf"', '"anyOf"', '"allOf"', '"$ref"']) {
-        assert.ok(!json.includes(banned), `${t.name} 用了不支持的 JSON Schema 关键字 ${banned}`)
+        assert.ok(!json.includes(banned), `${t.name} uses the unsupported JSON Schema keyword ${banned}`)
       }
     }
   })
 
-  test('注册的工具真的可执行（不是空壳）', () => {
+  test('the registered tools really execute (they are not empty shells)', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a4') })
     const byName = new Map(rec.tools.map((t) => [t.name, t]))
-    // 走一遍真实的"写 → 搜 → 统计"闭环
-    const w = byName.get('memory_write').execute({ text: '我认为取代优于相似度', subject: 'x', relation: 'y', object: '1' })
+    // Walk one real "write → search → stats" loop.
+    const w = byName.get('memory_write').execute({ text: '\u6211\u8ba4\u4e3a\u53d6\u4ee3\u4f18\u4e8e\u76f8\u4f3c\u5ea6', subject: 'x', relation: 'y', object: '1' })
     assert.equal(w.action, 'created')
-    const s = byName.get('memory_search').execute({ query: '取代' })
+    const s = byName.get('memory_search').execute({ query: '\u53d6\u4ee3' })
     assert.ok(s.total >= 1)
     const st = byName.get('memory_stats').execute({})
     assert.equal(st.judgments, 1)
   })
 
-  test('注入 section 注册了，且 text 是惰性函数', () => {
+  test('the injection section is registered, and its text is a lazy function', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a5') })
     assert.equal(rec.sections.length, 1)
     assert.equal(rec.sections[0].name, 'dsh-ai-memory:index')
-    assert.equal(typeof rec.sections[0].text, 'function', 'text 必须是函数（惰性读盘）')
-    assert.equal(rec.sections[0].interpolate, false, '必须关掉插值，否则正文里的 {{}} 会炸整个 prompt')
+    assert.equal(typeof rec.sections[0].text, 'function', 'text must be a function (lazy disk read)')
+    assert.equal(rec.sections[0].interpolate, false, 'interpolation must be off, or a {{}} in the body blows up the whole prompt')
   })
 
-  test('injectIndex: false 时不注册注入，但工具照常', () => {
+  test('with injectIndex: false no injection is registered, but the tools are unaffected', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a6'), injectIndex: false })
     assert.equal(rec.sections.length, 0)
-    assert.equal(rec.tools.length, 6, '关注入不该影响工具')
+    assert.equal(rec.tools.length, 6, 'turning injection off must not affect the tools')
   })
 
-  test('enabled: false 时什么都不注册', () => {
+  test('with enabled: false nothing is registered', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a7'), enabled: false })
     assert.equal(rec.tools.length, 0)
@@ -165,16 +168,16 @@ describe('apply() · 工具真的注册了（防静默失效）', () => {
   })
 })
 
-describe('apply() · webServer 是局部可选依赖（关键）', () => {
-  test('没有 webServer 时，工具**照样**注册（不该整条不激活）', () => {
+describe('apply() · webServer is a scoped optional dependency (critical)', () => {
+  test('with no webServer the tools are registered **anyway** (the plugin must not fail to activate)', () => {
     const { ctx, rec } = fakeCtx({ withWebServer: false })
     apply(ctx, { dir: join(work, 'b1') })
-    assert.equal(rec.tools.length, 6, '缺 webServer 不能让工具消失')
+    assert.equal(rec.tools.length, 6, 'a missing webServer must not make the tools disappear')
     assert.equal(rec.sections.length, 1)
     assert.equal(rec.routes.length, 0)
   })
 
-  test('有 webServer 时，三条数据路由注册了', () => {
+  test('with a webServer, the three data routes are registered', () => {
     const { ctx, rec } = fakeCtx({ withWebServer: true })
     apply(ctx, { dir: join(work, 'b2') })
     assert.equal(rec.routes.length, 3)
@@ -186,38 +189,38 @@ describe('apply() · webServer 是局部可选依赖（关键）', () => {
     ])
   })
 
-  test('webServer 走的是局部 inject，不在必需 inject 列表里', () => {
-    assert.ok(!inject.includes('webServer'), 'webServer 不该是硬依赖')
+  test('webServer goes through a scoped inject and is not in the required inject list', () => {
+    assert.ok(!inject.includes('webServer'), 'webServer must not be a hard dependency')
     assert.deepEqual([...inject].sort(), ['systemPrompt', 'tools'])
   })
 
-  test('注入声明的服务名与插件名符合约定', () => {
+  test('the declared service names and the plugin name follow the convention', () => {
     assert.equal(name, 'dsh-ai-memory')
   })
 })
 
-describe('apply() · 注入文本真的能生成', () => {
-  test('写一条判断后，注入文本包含它', () => {
+describe('apply() · the injected text really is produced', () => {
+  test('after writing a judgment, the injected text contains it', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'c1') })
     const byName = new Map(rec.tools.map((t) => [t.name, t]))
-    byName.get('memory_write').execute({ text: '图谱只做导航不做事实载荷' })
+    byName.get('memory_write').execute({ text: '\u56fe\u8c31\u53ea\u505a\u5bfc\u822a\u4e0d\u505a\u4e8b\u5b9e\u8f7d\u8377' })
     const text = rec.sections[0].text()
-    assert.match(text, /图谱只做导航/)
+    assert.match(text, /\u56fe\u8c31\u53ea\u505a\u5bfc\u822a/)
   })
 
-  test('空库时注入空串（不占上下文）', () => {
+  test('an empty store injects an empty string (costing no context)', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'c2') })
     assert.equal(rec.sections[0].text(), '')
   })
 
-  test('记忆库损坏时注入降级为空串，不抛（不能因为记忆坏了让会话跑不动）', () => {
+  test('a corrupt memory store degrades to an empty string without throwing (a broken store must not stall a session)', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'c3') })
-    // 制造一个"目录变成文件"的损坏场景：读盘会失败
+    // Produce a corruption scenario where reading from disk fails.
     const sec = rec.sections[0]
-    // 直接把 dir 指向一个非法路径（含 NUL）以触发读取异常
+    // Point dir at an invalid path (containing NUL) to trigger a read exception.
     const broken = fakeCtx()
     apply(broken.ctx, { dir: '\u0000invalid' })
     assert.doesNotThrow(() => broken.rec.sections[0].text())

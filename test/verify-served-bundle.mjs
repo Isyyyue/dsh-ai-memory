@@ -1,11 +1,12 @@
 /**
- * 断言**宿主正在服务的**那份客户端 bundle 含全部关键修复。
+ * Assert that the client bundle **the host is actually serving** contains every critical fix.
  *
- * 为什么需要单独做：本插件踩过的坑几乎都是**静默的** ——
- * 代码改了但宿主服务的是旧 bundle、或修复没进到服务的那份，都不报错。
- * 这个脚本直接从 HTTP 取回宿主服务的内容做断言，是最接近"用户实际拿到什么"的检查。
+ * Why this is separate: nearly every pitfall in this plugin is **silent** — the code changed but
+ * the host serves an old bundle, or a fix never made it into the served copy, and nothing reports
+ * an error. This script fetches the served content over HTTP and asserts on it, which is the
+ * closest available check to "what the user actually receives".
  *
- * 用法：node test/verify-served-bundle.mjs
+ * Usage: node test/verify-served-bundle.mjs
  */
 
 const BASE = process.env.DSH_BASE ?? 'http://127.0.0.1:19387'
@@ -13,15 +14,15 @@ const ID = 'dsh-ai-memory'
 
 const list = await (await fetch(`${BASE}/plugins/${ID}/snapshot`)).json().catch(() => null)
 if (list === null) {
-  console.log('✗ 宿主不可达或插件未启用')
+  console.log('✗ the host is unreachable or the plugin is not enabled')
   process.exit(1)
 }
 
-// 从 snapshot 路由拿不到 rev，改从 bundle 探测脚本拿
+// The snapshot route does not expose rev, so derive it the way the bundle probe script does.
 const probe = await (await fetch(`${BASE}/plugins/${ID}/snapshot`)).text()
 void probe
 
-/** 尝试几个常见 rev 来源：直接读插件目录的 mtime 算。 */
+/** Try the usual rev source: compute it from the plugin directory's mtime. */
 import { createHash } from 'node:crypto'
 import { statSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -37,17 +38,17 @@ const rev = h.digest('hex').slice(0, 12)
 
 const res = await fetch(`${BASE}/plugins/??${ID}/client.js&rev=${rev}`)
 if (!res.ok) {
-  console.log(`✗ bundle 取不到（HTTP ${res.status}，rev=${rev}）`)
+  console.log(`✗ bundle unavailable (HTTP ${res.status}, rev=${rev})`)
   process.exit(1)
 }
 const body = await res.text()
-/** 去掉注释 —— 注释里会**专门记录**这些坑，不能当成代码。 */
+/** Strip comments — they **deliberately document** these pitfalls and must not count as code. */
 const code = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 
-console.log(`\n【宿主正在服务的 bundle】rev=${rev}  ${body.length} 字节\n`)
+console.log(`\n[bundle currently served by the host] rev=${rev}  ${body.length} bytes\n`)
 
 let fails = 0
-/** 断言并打印。 */
+/** Assert and print. */
 function check(label, cond) {
   if (cond) console.log(`  ✓ ${label}`)
   else {
@@ -56,41 +57,41 @@ function check(label, cond) {
   }
 }
 
-console.log('— 应用稳定性（违反会让整个应用打不开）—')
-check('不读 ctx.styles', !/ctx\.styles/.test(code))
-check('inject 只声明 slots', /inject: \['slots'\]/.test(code))
+console.log('— application stability (a violation prevents the whole app from opening) —')
+check('does not read ctx.styles', !/ctx\.styles/.test(code))
+check('inject declares only slots', /inject: \['slots'\]/.test(code))
 
-console.log('\n— 画布能不能画 —')
-check('渲染器 effect 依赖 state.phase（否则永远不建渲染器）', /\}, \[state\.phase\]\)/.test(code))
-check('数据 effect 依赖含 canvasOk', /\[state\.snapshot, canvasOk\]/.test(code))
-check('有 resizeSoon 重试（否则绘图缓冲停在 300×150）', /resizeSoon\(attempt = 0\)/.test(code))
-check('有 ResizeObserver（尺寸变化的根治手段）', /new ResizeObserver\(/.test(code))
-check('resize 后重算视野', /changed && this\.autoFit === true/.test(code))
-check('全部节点 id 都发给 Worker（否则节点集被清空）', /coords\[id\] = p\.placed === true \? \[p\.x, p\.y\] : null/.test(code))
+console.log('\n— whether the canvas can draw —')
+check('the renderer effect depends on state.phase (otherwise the renderer is never created)', /\}, \[state\.phase\]\)/.test(code))
+check('the data effect depends on canvasOk', /\[state\.snapshot, canvasOk\]/.test(code))
+check('resizeSoon retries exist (otherwise the drawing buffer stays at 300×150)', /resizeSoon\(attempt = 0\)/.test(code))
+check('ResizeObserver present (the root fix for size changes)', /new ResizeObserver\(/.test(code))
+check('the viewport is recomputed after a resize', /changed && this\.autoFit === true/.test(code))
+check('every node id is sent to the Worker (otherwise the node set is emptied)', /coords\[id\] = p\.placed === true \? \[p\.x, p\.y\] : null/.test(code))
 
-console.log('\n— 能不能交互 —')
-check('兜底层是有条件渲染（否则盖住 canvas 吃掉指针事件）', /canvasOk \? null : FallbackGraph/.test(code))
-check('有 dblclick 复位', /addEventListener\('dblclick'/.test(code))
-check('有 contextmenu 切换含退役', /addEventListener\('contextmenu'/.test(code))
+console.log('\n— whether interaction works —')
+check('the fallback layer is conditionally rendered (otherwise it covers the canvas and eats pointer events)', /canvasOk \? null : FallbackGraph/.test(code))
+check('dblclick reset present', /addEventListener\('dblclick'/.test(code))
+check('contextmenu toggle for retired nodes present', /addEventListener\('contextmenu'/.test(code))
 
-console.log('\n— UI 精简（主人要求只留图）—')
+console.log('\n— UI reduction (only the graph is kept) —')
 check('SHOW_HEAD = false', /const SHOW_HEAD = false/.test(code))
 check('SHOW_CHIPS = false', /const SHOW_CHIPS = false/.test(code))
 check('SHOW_TOOLBAR = false', /const SHOW_TOOLBAR = false/.test(code))
 check('SHOW_LEGEND = false', /const SHOW_LEGEND = false/.test(code))
 const detail = code.slice(code.indexOf('function Detail('), code.indexOf('function FallbackGraph'))
-check('详情不显示裸 id', detail.length > 100 && !/node\.id/.test(detail))
-check('详情不显示版本/时间', !/node\.revision|node\.createdAt/.test(detail))
-check('详情保留正文', /node\.text/.test(detail))
-check('详情保留取代链', /node\.chain/.test(detail))
+check('the detail view does not show the bare id', detail.length > 100 && !/node\.id/.test(detail))
+check('the detail view does not show revision/time', !/node\.revision|node\.createdAt/.test(detail))
+check('the detail view keeps the body text', /node\.text/.test(detail))
+check('the detail view keeps the supersession chain', /node\.chain/.test(detail))
 
-console.log('\n— 样式注入 —')
-check('用带 data-plugin 标记的 <style>', /data-plugin="dsh-ai-memory"/.test(body))
-check('ensureStyles 有定义且有调用', (body.match(/ensureStyles\(/g) ?? []).length >= 2)
+console.log('\n— style injection —')
+check('a <style> element carrying the data-plugin marker is used', /data-plugin="dsh-ai-memory"/.test(body))
+check('ensureStyles is defined and called', (body.match(/ensureStyles\(/g) ?? []).length >= 2)
 
 console.log(`\n${'='.repeat(56)}`)
 if (fails > 0) {
-  console.log(`失败 ${fails} 项`)
+  console.log(`${fails} item(s) failed`)
   process.exit(1)
 }
-console.log('宿主服务的 bundle 含全部关键修复 ✓')
+console.log('the host-served bundle contains every critical fix ✓')
