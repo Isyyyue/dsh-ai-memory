@@ -1,15 +1,19 @@
 /**
- * 客户端半边的测试。
+ * Tests for the client half.
  *
- * 手法：造一个假的 `window.__ModuleLoader__`，真的把 `lib/client.js` 跑一遍 ——
- * 这样测的是**浏览器里真正会执行的那份代码**，而不是它的副本。
+ * Approach: build a fake `window.__ModuleLoader__` and actually run
+ * `lib/client.js` — this exercises **the code the browser really executes**,
+ * not a copy of it.
  *
- * 这一版针对 **Canvas + Worker** 架构（推翻了早先的 SVG 版）：
- * 面板不再产出 SVG 元素树，而是把位置数据喂给 Canvas 2D 画布。
- * 所以断言从"元素树结构"改为"注册正确 + 交互契约正确 + 硬约束不违反"。
+ * This version targets the **Canvas + Worker** architecture (it replaced an
+ * earlier SVG version): the panel no longer produces an SVG element tree but
+ * feeds positions to a Canvas 2D surface. The assertions therefore moved from
+ * "element tree structure" to "registers correctly + honours the interaction
+ * contract + violates no hard constraint".
  *
- * 渲染的**视觉**结果仍需人眼（本机无浏览器控制），但渲染**逻辑**由
- * `panel-render.test.js` 与 `worker.test.js` 覆盖。
+ * The **visual** result of rendering still needs a human eye (no browser
+ * control on this machine); the rendering **logic** is covered by
+ * `panel-render.test.js` and `worker.test.js`.
  */
 
 import { test, describe } from 'node:test'
@@ -22,7 +26,7 @@ import vm from 'node:vm'
 const here = dirname(fileURLToPath(import.meta.url))
 const CLIENT_PATH = join(here, '..', 'lib', 'client.js')
 
-/** 极简 React 替身：只够本插件用（createElement / useRef / useState / useEffect）。 */
+/** Minimal React stand-in: just enough for this plugin (createElement / useRef / useState / useEffect). */
 function fakeReact() {
   return {
     createElement(type, props, ...children) {
@@ -36,9 +40,10 @@ function fakeReact() {
 }
 
 /**
- * 在隔离的 vm 里加载客户端模块，返回工厂产物与注册记录。
+ * Load the client module in an isolated vm and return the factory output plus
+ * the registration records.
  *
- * @param {{withStyles?: boolean}} [opts] - 是否提供 styles builtin。
+ * @param {{withStyles?: boolean}} [opts] - whether to provide the styles builtin.
  * @returns {{loaderId: string, api: object, registered: object[], injects: string[], styles: string[], effects: number}}
  */
 function loadClient(opts = {}) {
@@ -55,7 +60,7 @@ function loadClient(opts = {}) {
           mod.exports.loaderId = id
           mod.exports.factoryResult = factory((name) => {
             if (name === 'react') return fakeReact()
-            throw new Error(`意外的 require：${name}`)
+            throw new Error(`unexpected require: ${name}`)
           })
         },
       },
@@ -94,21 +99,21 @@ function loadClient(opts = {}) {
   return { loaderId: mod.exports.loaderId, api, registered, injects, styles, effects }
 }
 
-describe('client · 模块加载', () => {
-  test('注册的 id 等于包名（对不上就永远不会加载）', () => {
+describe('client · module loading', () => {
+  test('the registered id equals the package name (a mismatch means it never loads)', () => {
     assert.equal(loadClient().loaderId, 'dsh-ai-memory')
   })
 
-  test('导出 apply 且 inject 声明了 slots', () => {
+  test('exports apply and declares slots in inject', () => {
     const { api } = loadClient()
     assert.equal(typeof api.apply, 'function')
     assert.deepEqual([...api.inject], ['slots'])
   })
 
-  test('只 require react，不 require 任何 Harness Client 包', () => {
+  test('requires only react, no Harness Client package', () => {
     const code = readFileSync(CLIENT_PATH, 'utf8')
     const requires = [...code.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1])
-    assert.deepEqual([...new Set(requires)], ['react'], `只该 require react，实际：${requires.join(', ')}`)
+    assert.deepEqual([...new Set(requires)], ['react'], `only react may be required, got: ${requires.join(', ')}`)
   })
 
   test('不碰页面主体、不读别的插件的 DOM', () => {
@@ -271,7 +276,7 @@ describe('client · 受限 ctx 下必须能激活（真实事故的回归测试�
           load({ factory }) {
             mod.exports.api = factory((name) => {
               if (name === 'react') return fakeReact()
-              throw new Error(`意外的 require：${name}`)
+              throw new Error(`unexpected require: ${name}`)
             })
           },
         },
@@ -797,19 +802,19 @@ describe('client · 数据通道', () => {
 
   test('有错误态与空态（不是白屏）', () => {
     const code = readFileSync(CLIENT_PATH, 'utf8')
-    assert.ok(/读不到记忆库/.test(code), '要有错误态文案')
-    assert.ok(/还没有任何判断/.test(code), '要有空态文案')
+    assert.ok(/Cannot read memory store/.test(code), '要有错误态文案')
+    assert.ok(/No judgments yet/.test(code), '要有空态文案')
   })
 
   test('图例只列**真能画出来的**四种关系', () => {
     const code = readFileSync(CLIENT_PATH, 'utf8')
     // `derives` / `restates` 没有入口能建（工具只暴露前四种），
     // 列出来反而让人以为"怎么没有这种线"。
-    for (const label of ['互补', '矛盾', '取代', '依据']) {
+    for (const label of ['Complements', 'Tensions', 'Supersedes', 'Depends on']) {
       assert.ok(code.includes(label), `图例应当包含「${label}」`)
     }
     const edgeLabel = code.slice(code.indexOf('const EDGE_LABEL'), code.indexOf('function edgeLegend'))
-    for (const dead of ['衍生', '复述']) {
+    for (const dead of ['Derives', 'Restates']) {
       assert.ok(!edgeLabel.includes(dead), `EDGE_LABEL 不该再有「${dead}」（建不出来）`)
     }
   })
