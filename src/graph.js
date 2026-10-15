@@ -1,30 +1,36 @@
 /**
- * 图谱快照：把 fold 出来的状态转成客户端画图需要的最小结构。
+ * Graph snapshot: turn the folded state into the minimal structure the client
+ * needs to draw a graph.
  *
- * 设计依据（社区与官方的一致结论）：
- *   graph-memory 的文档写明 —— **图谱节点只做导航，不做事实载荷**：
+ * Design rationale (community and official agreement):
+ *   graph-memory's documentation states that **graph nodes navigate, they do not
+ *   carry facts**:
  *     "Summary, SPO, and communities only navigate; original question and final
  *      answer remain the evidence."
- *   官方 practices.md 也要求：派生的视图应由 Host 算好再交给 Client，
+ *   The official practices.md likewise requires that derived views be computed
+ *   on the Host before reaching the Client:
  *     "The value reaches the Client already computed; the Client does not fold
  *      session events itself."
  *
- * 所以本模块**只输出节点与边**（含状态、度数、少量摘要），不输出正文全文 ——
- * 正文按需由 memory_search / memory_history 取。这样图谱再大也不会撑爆上下文或传输。
+ * So this module emits **nodes and edges only** (with status, degree and a short
+ * summary), never full bodies. Bodies are fetched on demand through
+ * memory_search / memory_history, so the graph cannot overflow the context or
+ * the transport however large it grows.
  *
- * 同时它也是"可解释性界面"的数据源：每个节点带 status / supersededBy / 度数，
- * 于是能看出"这条想法被谁取代了、它连着什么"。
+ * It is also the data source for the explainability UI: every node carries
+ * status / supersededBy / degree, so it is visible which idea superseded it and
+ * what it connects to.
  */
 
 import { activeNodes, supersedeChain, backlinksOf, outlinksOf, STATUS, KIND } from './ledger.js'
 import { summarize } from './query.js'
 
 /**
- * 构建图谱快照。
+ * Build a graph snapshot.
  *
- * @param {object} state - fold 后的状态。
- * @param {{includeRetired?: boolean, maxNodes?: number}} [opts] - 选项。
- * @returns {object} `{ nodes, edges, stats, truncated }`。
+ * @param {object} state - Folded state.
+ * @param {{includeRetired?: boolean, maxNodes?: number}} [opts] - Options.
+ * @returns {object} `{ nodes, edges, stats, truncated }`.
  */
 export function buildSnapshot(state, opts = {}) {
   const includeRetired = opts.includeRetired === true
@@ -33,27 +39,33 @@ export function buildSnapshot(state, opts = {}) {
   const active = activeNodes(state)
 
   /**
-   * 选点策略。
+   * Node selection policy.
    *
-   * ## 默认：**只画活跃的**（主人明确要求"退役的就直接消失"）
+   * ## Default: **active nodes only** (an explicit product requirement: retired
+   * nodes simply disappear)
    *
-   * 图是"我现在相信什么"，不是"我历史上想过什么"。
-   * 退役的（被取代 / 自己撤回）默认**完全不画** —— 干净、不干扰。
+   * The graph answers "what do I believe now", not "what have I thought
+   * historically". Retired nodes (superseded or self-withdrawn) are **not drawn
+   * at all** by default — clean, no clutter.
    *
-   * ## `?retired=1` 时才把退役的也带出来（含取代链）
+   * ## Only `?retired=1` brings retired nodes back, along with the supersession chain
    *
-   * 那时候要的是"进化史"：一条判断被推翻过几次、怎么变的。
-   * 沿 `supersedes` 边（`from` = 新的 → `to` = 被取代的旧的）逐代回追，
-   * 把整条来路都带上。
+   * That view is about evolution history: how many times a judgment was
+   * overturned and how it changed. Walking `supersedes` edges (`from` = newer,
+   * `to` = the superseded older node) generation by generation carries the whole
+   * provenance.
    *
-   * ## ⚠️ 本鲸在这上面反复过两次，记下来免得再来
+   * ## ⚠️ This went back and forth twice; recorded here to avoid a third time
    *
-   * 1. **曾经只取活跃** → 因为每条 `supersedes` 边都指向退役节点，
-   *    把退役滤掉就等于**把所有边都滤掉**，得到「3 节点 · 0 连线」的空白图。
-   * 2. 于是本鲸改成**默认就带上取代链** → 图能看了，但满屏灰点，
-   *    主人问「为什么有灰的有白的」。
-   * 3. **最终（主人定的）**：默认**只画活跃**，退役的想看得主动要（右键切换）。
-   *    灰点不再混在默认视图里。
+   * 1. **Active only at first** → because every `supersedes` edge points at a
+   *    retired node, filtering retired nodes out filters out **every edge**,
+   *    leaving a blank "3 nodes · 0 links" graph.
+   * 2. So the default became **include the supersession chain** → the graph was
+   *    visible but covered in grey dots, prompting the question "why are some
+   *    grey and some white".
+   * 3. **Final decision**: default to **active only**, with retired nodes
+   *    available on request (a right-click toggle). Grey dots no longer mix into
+   *    the default view.
    */
   const byId = state.nodes
   const chainIds = new Set()
@@ -65,7 +77,7 @@ export function buildSnapshot(state, opts = {}) {
         const next = []
         for (const fromId of frontier) {
           for (const e of state.edges) {
-            // 方向：from 是新的，to 是它取代掉的旧的 → 顺着 from 往下追
+            // Direction: from is the newer node, to is the older one it superseded → follow from downwards.
             if (e.type !== 'supersedes' || e.from !== fromId) continue
             if (seen.has(e.to)) continue
             seen.add(e.to)
@@ -82,14 +94,14 @@ export function buildSnapshot(state, opts = {}) {
     ? [...state.nodes.values()]
     : [...active, ...[...chainIds].map((id) => byId.get(id)).filter((n) => n !== undefined)]
 
-  // 稳定排序：新建的靠前，这样面板上先看到最近的想法。
+  // Stable sort: newest first, so the panel shows recent ideas at the top.
   pool.sort((a, b) => b.createdAt - a.createdAt || String(a.id).localeCompare(String(b.id)))
 
   const truncated = pool.length > maxNodes
   const chosen = pool.slice(0, maxNodes)
   const chosenIds = new Set(chosen.map((n) => n.id))
 
-  // 度数：一眼看出哪条判断是枢纽、哪条是孤岛。
+  // Degree: shows at a glance which judgment is a hub and which is an orphan.
   const degree = new Map()
   for (const e of state.edges) {
     if (!chosenIds.has(e.from) || !chosenIds.has(e.to)) continue
@@ -99,7 +111,7 @@ export function buildSnapshot(state, opts = {}) {
 
   const nodes = chosen.map((n) => ({
     id: n.id,
-    // 摘要而非全文：图谱是导航层，正文按需取。
+    // Summary rather than full text: the graph is a navigation layer, bodies are fetched on demand.
     label: summarize(n.text, 60),
     kind: n.kind,
     status: n.status,
@@ -125,12 +137,12 @@ export function buildSnapshot(state, opts = {}) {
 }
 
 /**
- * 统计。面板顶部与 /stats 路由共用。
+ * Statistics. Shared by the panel header and the /stats route.
  *
- * @param {object} state - 状态。
- * @param {object[]} [nodes] - 已裁剪的节点（省略则重算）。
- * @param {object[]} [edges] - 已裁剪的边（省略则重算）。
- * @returns {object} 统计对象。
+ * @param {object} state - State.
+ * @param {object[]} [nodes] - Already-truncated nodes (recomputed when omitted).
+ * @param {object[]} [edges] - Already-truncated edges (recomputed when omitted).
+ * @returns {object} Statistics object.
  */
 export function countStats(state, nodes, edges) {
   const all = [...state.nodes.values()]
@@ -154,11 +166,11 @@ export function countStats(state, nodes, edges) {
 }
 
 /**
- * 单条判断的详情（供面板点击时展示）。
+ * Details for a single judgment (shown when the panel selects one).
  *
- * @param {object} state - 状态。
- * @param {string} id - 节点 id。
- * @returns {object|null} 详情；找不到返回 null。
+ * @param {object} state - State.
+ * @param {string} id - Node id.
+ * @returns {object|null} Details; null when not found.
  */
 export function nodeDetail(state, id) {
   const n = state.nodes.get(id)
@@ -176,7 +188,7 @@ export function nodeDetail(state, id) {
     supersededBy: n.supersededBy,
     tags: n.tags,
     citations: n.citations,
-    // 反链是"可解释性"的核心：谁引用了我。
+    // Backlinks are the core of explainability: who references this node.
     backlinks: backlinksOf(state, id).map((e) => ({ from: e.from, type: e.type, note: e.note })),
     outlinks: outlinksOf(state, id).map((e) => ({ to: e.to, type: e.type, note: e.note })),
     history: n.history.map((h) => ({ at: h.at, text: summarize(h.text, 300), reason: h.reason })),

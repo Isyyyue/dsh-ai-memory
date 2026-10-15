@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "给 DSH 里的 AI 一层自己的判断记忆：判断节点 + 确定性取代（supersede）+ 双时态账本 + 双链，规则与人格分开治理，图谱作可解释性界面。",
+  "description": "A judgment layer for the AI inside DSH: judgment nodes with deterministic supersession, a bi-temporal ledger, and bidirectional links. Rules are governed separately from judgments, and the graph is the explainability surface.",
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",

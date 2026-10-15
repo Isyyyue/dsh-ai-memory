@@ -49,7 +49,12 @@ check('files 含 lib/（客户端半边要打包进去）', pkg.files.includes('
 check('files 含 src/', pkg.files.includes('src/'))
 check('cordis.patch.yml 存在', existsSync(join(root, 'cordis.patch.yml')))
 check('README.md 存在', existsSync(join(root, 'README.md')))
-check('MAINTAINING.md 存在', existsSync(join(root, 'MAINTAINING.md')))
+check('LICENSE 存在', existsSync(join(root, 'LICENSE')))
+// MAINTAINING.md is intentionally NOT shipped (it is a maintainer-only log,
+// see .gitignore). If it is present locally, it must still be parseable.
+if (existsSync(join(root, 'MAINTAINING.md'))) {
+  check('MAINTAINING.md 非空（本地维护日志）', readFileSync(join(root, 'MAINTAINING.md'), 'utf8').length > 1000)
+}
 
 console.log('\n【dsh.requires 声明（自检脚本读这个）】')
 const req = pkg.dsh.requires

@@ -118,17 +118,17 @@ describe('双时态 · memory_history 的 at 参数真的生效', () => {
       // 当前视角：v1 已被取代
       const nowView = ops.history({ id: a.node_id })
       assert.equal(nowView.found, true)
-      assert.match(nowView.note, /取代链长 2/)
+      assert.match(nowView.note, /supersession chain length 2/)
 
       // 回到 T1：那时 v1 还是活跃的
       const thenView = ops.history({ id: a.node_id, at: T1 })
       assert.equal(thenView.found, true)
-      assert.match(thenView.note, /状态 active/, '那一刻它还是活跃的')
-      assert.match(thenView.note, /第 1 版/)
+      assert.match(thenView.note, /status active/, '那一刻它还是活跃的')
+      assert.match(thenView.note, /revision 1/)
 
       // T2 之后：它变成 superseded
       const laterView = ops.history({ id: a.node_id, at: T2 })
-      assert.match(laterView.note, /状态 superseded/, '那一刻它已被取代')
+      assert.match(laterView.note, /status superseded/, '那一刻它已被取代')
     } finally {
       try { rmSync(work, { recursive: true, force: true }) } catch { /* 忽略 */ }
     }
@@ -145,7 +145,7 @@ describe('双时态 · memory_history 的 at 参数真的生效', () => {
 
       const early = ops.history({ id: a.node_id, at: T - 86400000 })
       assert.equal(early.found, false)
-      assert.match(early.note, /还不存在/)
+      assert.match(early.note, /did not exist yet/)
     } finally {
       try { rmSync(work2, { recursive: true, force: true }) } catch { /* 忽略 */ }
     }
@@ -161,7 +161,7 @@ describe('双时态 · memory_history 的 at 参数真的生效', () => {
       const h = ops.history({ id: a.node_id })
       assert.equal(h.found, true)
       assert.ok(Array.isArray(h.revisions))
-      assert.match(h.note, /共 \d+ 次变更/)
+      assert.match(h.note, /change\(s\)/)
     } finally {
       try { rmSync(work3, { recursive: true, force: true }) } catch { /* 忽略 */ }
     }
@@ -176,7 +176,7 @@ describe('双时态 · memory_history 的 at 参数真的生效', () => {
       const a = ops.write({ text: '普通判断' })
       const h = ops.history({ id: a.node_id, at: 'not-a-number' })
       assert.equal(h.found, true)
-      assert.match(h.note, /共 \d+ 次变更/, '应当走正常路径，而不是被当成双时态查询')
+      assert.match(h.note, /change\(s\)/, '应当走正常路径，而不是被当成双时态查询')
     } finally {
       try { rmSync(work4, { recursive: true, force: true }) } catch { /* 忽略 */ }
     }

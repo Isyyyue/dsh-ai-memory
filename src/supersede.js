@@ -1,61 +1,72 @@
 /**
- * 确定性取代引擎（deterministic supersession）。
+ * Deterministic supersession engine.
  *
- * 为什么不能用"相似度"来判定矛盾 —— 这是本插件最重要的设计依据，有学术实证：
+ * Why similarity cannot decide contradiction — the plugin's most important
+ * design rationale, with published evidence:
  *
- *   MemStrata（arXiv 2606.26511）在 98 个标注对上实测：
- *     余弦相似度区分「矛盾」与「复述」的 AUROC = 0.59（接近随机）；
- *     而且**矛盾平均比复述更像原事实**（0.812 vs 0.800）——
- *     因为「值翻转」（8000 → 8080）比真正的同义改写是**更小的编辑**。
- *   结论：陈旧性检测**必须是结构性的**，不能靠阈值、也不能靠 LLM 裁判。
- *     "新事实与已存事实共享 (subject, relation) 键但断言不同 object，则新的取代旧的
- *      —— 与它们 embedding 多相似无关。"
+ *   MemStrata (arXiv 2606.26511) measured 98 annotated pairs:
+ *     cosine similarity separating contradiction from restatement gives
+ *     AUROC = 0.59 (near random), and contradictions on average resemble the
+ *     original fact more closely than restatements do (0.812 vs 0.800),
+ *     because flipping a value (8000 → 8080) is a smaller edit than a genuine
+ *     paraphrase.
+ *   Conclusion: staleness detection must be structural. Neither a threshold nor
+ *   an LLM judge will do. "When a new fact shares the (subject, relation) key
+ *   with a stored fact but asserts a different object, the new one supersedes
+ *   the old one — regardless of how similar their embeddings are."
  *
- * 本模块因此**不含任何相似度计算**。判定完全靠字符串规范化 + 三元组比对。
- * 这样做的另一个好处：可测试、可复现、零依赖、零 LLM 调用（读取路径无 LLM）。
+ * This module therefore contains no similarity computation at all. Decisions
+ * rest entirely on string normalization plus triple comparison, which also
+ * makes them testable, reproducible, dependency-free and LLM-free (the read
+ * path makes no LLM call).
  *
- * 两条对称的消融结论（同一论文）决定了本引擎的姿态：
- *   - 激进合并 → 回归到低于 RAG（丢掉回答后续问题所需的细节）；
- *   - 完全不取代 → 虚构率涨 6 倍，**比不准确更不安全**（模型同时看到新旧值，开始编造）。
- *   → 「保留优先，然后取代」：只在矛盾这一个轴上压缩，绝不合并不同事实。
+ * Two symmetric ablations from the same paper set the engine's posture:
+ *   - aggressive merging regresses below plain RAG (it discards the detail
+ *     needed to answer follow-up questions);
+ *   - never superseding multiplies the fabrication rate by six, which is less
+ *     safe than being inaccurate, because the model sees both the old and the
+ *     new value and starts inventing.
+ *   → "retain first, then supersede": compress only along the contradiction
+ *     axis, never merge distinct facts.
  */
 
 import { KIND } from './ledger.js'
 
 /**
- * 合法的 kind 白名单。
+ * Whitelist of valid kinds.
  *
- * ⚠️ 之前这里是写死的 `input.kind === 'rule' ? 'rule' : 'judgment'` ——
- * 新增 `insight` 时就被**静默降级**成 judgment（不报错，只是类型丢了，
- * 而且取代逻辑会拿它当判断去比三元组）。
- * 改成白名单后，**新增一种 kind 只需在这里加一项**（其实连这里也不用改 ——
- * 直接从 KIND 枚举派生，永远不会再漏）。
+ * ⚠️ This used to be hardcoded as `input.kind === 'rule' ? 'rule' : 'judgment'`,
+ * so adding `insight` silently downgraded it to judgment: no error, just a lost
+ * kind, and supersession then compared it as a judgment. With a whitelist,
+ * adding a kind means adding one entry here — and since it derives from the KIND
+ * enum directly, it can never fall behind again.
  */
 const VALID_KINDS = new Set(Object.values(KIND))
 
 /**
- * 规范化一个三元组分量，用于确定性比对。
+ * Normalize one triple component for deterministic comparison.
  *
- * 规范化是**有损且刻意保守**的：只做那些"不会把不同事实变相同"的处理。
- * 不做词干化、不做同义词、不做向量 —— 那些都会引入不确定性。
+ * Normalization is lossy and deliberately conservative: it applies only
+ * transformations that cannot make distinct facts identical. No stemming, no
+ * synonyms, no vectors — all of those introduce nondeterminism.
  *
- * @param {unknown} v - 原始分量。
- * @returns {string} 规范化后的键分量（空字符串表示"没有这一项"）。
+ * @param {unknown} v - Raw component.
+ * @returns {string} Normalized key component (empty string means "component absent").
  */
 export function normalizeComponent(v) {
   if (typeof v !== 'string') return ''
   return v
-    .normalize('NFKC')          // 全角/半角、兼容字符归一（中文场景很重要）
+    .normalize('NFKC')          // fold full-width/half-width and compatibility characters
     .trim()
-    .replace(/\s+/g, ' ')       // 压平空白
-    .toLowerCase()              // 大小写不敏感
+    .replace(/\s+/g, ' ')       // collapse whitespace
+    .toLowerCase()              // case-insensitive
 }
 
 /**
- * 生成 (subject, relation) 键。取代判定只看这个键 + object。
+ * Build the (subject, relation) key. Supersession compares this key plus object.
  *
- * @param {{subject?: unknown, relation?: unknown}} node - 含三元组的节点。
- * @returns {string|null} 键；任一分量缺失时返回 null（= 不参与取代）。
+ * @param {{subject?: unknown, relation?: unknown}} node - Node carrying a triple.
+ * @returns {string|null} Key; null when either component is missing (= no supersession).
  */
 export function assertionKey(node) {
   const s = normalizeComponent(node?.subject)
@@ -65,17 +76,17 @@ export function assertionKey(node) {
 }
 
 /**
- * 判定一条新判断与已有判断的关系。
+ * Classify the relation between an incoming judgment and existing judgments.
  *
- * 返回四种之一，与论文的标注类别一致：
- *   'duplicate'   —— 同键同 object：复述（不新建，只强化引用）
- *   'supersede'   —— 同键不同 object：矛盾（新取代旧）
- *   'novel'       —— 没有同键：新事实
- *   'unkeyed'     —— 缺三元组：无法参与取代，只按普通节点存
+ * Returns one of four values, matching the paper's annotation classes:
+ *   'duplicate'   same key, same object: restatement (create nothing, reinforce the citation)
+ *   'supersede'   same key, different object: contradiction (the new one replaces the old)
+ *   'novel'       no matching key: a new fact
+ *   'unkeyed'     triple incomplete: cannot take part in supersession, stored as a plain node
  *
- * @param {object} incoming - 新判断（需 subject/relation/object）。
- * @param {object[]} active - 当前活跃节点数组。
- * @returns {{relation: string, target?: object}} 判定结果与命中的既有节点。
+ * @param {object} incoming - New judgment (needs subject/relation/object).
+ * @param {object[]} active - Currently active nodes.
+ * @returns {{relation: string, target?: object}} Verdict and the existing node it matched.
  */
 export function classify(incoming, active) {
   const key = assertionKey(incoming)
@@ -85,7 +96,7 @@ export function classify(incoming, active) {
   let sameKey = null
   for (const n of active) {
     if (assertionKey(n) !== key) continue
-    // 同键同 object → 复述。object 为空时视为"没有可断言的差异"，也算复述。
+    // Same key, same object → restatement. An empty object means there is no assertable difference, which also counts as a restatement.
     if (normalizeComponent(n.object) === obj) return { relation: 'duplicate', target: n }
     sameKey = n
   }
@@ -94,15 +105,16 @@ export function classify(incoming, active) {
 }
 
 /**
- * 为一条新判断算出它应该产生的事件序列。
+ * Compute the event sequence a new judgment should produce.
  *
- * 纯函数：输入状态 + 新判断，输出事件数组。**不写盘、不改状态**。
- * 这样调用方可以先把事件拿去看、去测、去审，再决定要不要提交。
+ * Pure function: state plus new judgment in, event array out. It writes nothing
+ * and mutates nothing, so the caller can inspect, test or review the events
+ * before deciding whether to commit them.
  *
- * @param {object} state - fold 后的当前状态。
- * @param {object} input - `{ text, subject, relation, object, kind, tags, citations, reason }`。
- * @param {{at: number, nextSeq: number, newId: string}} ctx - 时间、序号、新 id。
- * @returns {{events: object[], outcome: object}} 事件与结果摘要。
+ * @param {object} state - Current folded state.
+ * @param {object} input - `{ text, subject, relation, object, kind, tags, citations, reason }`.
+ * @param {{at: number, nextSeq: number, newId: string}} ctx - Time, sequence number, new id.
+ * @returns {{events: object[], outcome: object}} Events and outcome summary.
  */
 export function planWrite(state, input, ctx) {
   const active = activeNodesOf(state)
@@ -113,17 +125,16 @@ export function planWrite(state, input, ctx) {
   const take = () => (seq += 1)
 
   if (verdict.relation === 'duplicate') {
-    // 复述：**不新建节点，也不产生任何事件**。
-    // 理由：同一断言不需要两份卡（那正是"攒"而不是"长"）。
-    // 刻意不推一条从 ctx.newId 出发的边 —— 那个节点并不存在，推了会让 fold 报 problem。
-    // 复述这件事本身是"确认"，但它的价值在于让调用方知道"已经有了"，不必落盘。
+    // Restatement: create no node and emit no event. One assertion does not need two cards.
+    // Deliberately no edge from ctx.newId: that node does not exist, and emitting one would make fold report a problem.
+    // The restatement is itself a confirmation; its value is telling the caller the assertion already exists, so nothing needs writing.
     return {
       events: [],
       outcome: {
         action: 'duplicate',
         nodeId: verdict.target.id,
         text: verdict.target.text,
-        note: '这条判断与既有判断是同一断言（同 subject/relation/object），未新建节点。',
+        note: 'Same assertion as an existing judgment (identical subject/relation/object); no node was created.',
       },
     }
   }
@@ -134,9 +145,7 @@ export function planWrite(state, input, ctx) {
     type: 'node.created',
     data: {
       id: ctx.newId,
-      // ⚠️ 这里曾经写死成 `input.kind === 'rule' ? 'rule' : 'judgment'` ——
-      // 于是新加的 `insight` 被**静默降级**成 judgment（不报错，只是类型丢了）。
-      // 现在按 KIND 白名单校验，不认识的才退成 judgment。
+      // ⚠️ This was once hardcoded as `input.kind === 'rule' ? 'rule' : 'judgment'`, so a new `insight` was silently downgraded to judgment: no error, just a lost kind. Now validated against the KIND whitelist; only unknown kinds fall back to judgment.
       kind: VALID_KINDS.has(input.kind) ? input.kind : 'judgment',
       text: input.text,
       subject: input.subject ?? null,
@@ -150,14 +159,14 @@ export function planWrite(state, input, ctx) {
 
   if (verdict.relation === 'supersede') {
     const old = verdict.target
-    // 双时态：关掉旧节点的 valid_to，**不删除**。旧判断仍可被 as-of-time 查询与轨迹查看。
+    // Bi-temporal: close the old node's valid_to, never delete it. The old judgment stays available to as-of-time queries and provenance views.
     events.push({
       seq: take(),
       at,
       type: 'node.superseded',
-      data: { id: old.id, byId: ctx.newId, reason: input.reason ?? '同一断言的更新值' },
+      data: { id: old.id, byId: ctx.newId, reason: input.reason ?? 'updated value for the same assertion' },
     })
-    // 取代同时留一条边，让图谱上看得见"谁取代了谁"。
+    // Supersession also leaves an edge, so the graph shows which node replaced which.
     events.push({
       seq: take(),
       at,
@@ -171,21 +180,21 @@ export function planWrite(state, input, ctx) {
         nodeId: ctx.newId,
         supersededId: old.id,
         supersededText: old.text,
-        note: `确定性取代：同 (subject, relation) 键、不同 object。旧判断退役但保留在账本里。`,
+        note: `Deterministic supersession: same (subject, relation) key, different object. The old judgment is retired but kept in the ledger.`,
       },
     }
   }
 
   return {
     events,
-    outcome: { action: 'created', nodeId: ctx.newId, note: '新判断已记录。' },
+    outcome: { action: 'created', nodeId: ctx.newId, note: 'New judgment recorded.' },
   }
 }
 
 /**
- * 轻量取活跃节点（避免本模块依赖 ledger.js 的具体形状，只要求 state.nodes 是 Map）。
- * @param {object} state - 折叠后的状态。
- * @returns {object[]} 活跃节点数组。
+ * Lightweight active-node lookup, so this module depends only on state.nodes being a Map, not on ledger.js internals.
+ * @param {object} state - Folded state.
+ * @returns {object[]} Active nodes.
  */
 function activeNodesOf(state) {
   const out = []
@@ -196,14 +205,15 @@ function activeNodesOf(state) {
 }
 
 /**
- * 生成一个稳定的节点 id。
+ * Generate a stable node id.
  *
- * 刻意**不含时间戳以外的随机性**：同样的内容在不同时间会得到不同 id（因为是两条不同的判断），
- * 但同一时刻生成的 id 可复现，便于测试。
+ * Deliberately free of randomness beyond the timestamp: the same content yields
+ * different ids at different times (they are two distinct judgments), while ids
+ * generated at one moment are reproducible for tests.
  *
- * @param {number} at - 毫秒时间戳。
- * @param {number} seq - 序号。
- * @returns {string} 形如 `n_0007_1a2b3c` 的 id。
+ * @param {number} at - Millisecond timestamp.
+ * @param {number} seq - Sequence number.
+ * @returns {string} An id shaped like `n_0007_1a2b3c`.
  */
 export function makeNodeId(at, seq) {
   const t = at.toString(36).slice(-6)

@@ -1,26 +1,32 @@
 /**
- * 追加式账本（append-only ledger）—— 记忆的唯一真相（source of truth）。
+ * Append-only ledger: the single source of truth for memory.
  *
- * 为什么是账本，而不是"一堆可变的卡片文件"：
- * - 判断会被推翻（supersede），而**推翻的过程本身是信息**。可变文件只看得到结果；
- *   账本看得到"3 月我这么想 → 6 月被那条证据推翻 → 9 月我又改回来"。
- * - 账本是纯文本 JSONL：人类可读、可 git diff、可 rm、可手工修。
- * - 图谱、反链、当前活跃判断**全部由 fold 派生**，可随时重建、删掉不丢信息。
- *   这正合 DSH 官方立场：session log 是唯一真相，插件记忆是派生缓存。
+ * Why a ledger rather than a set of mutable card files:
+ * - Judgments get superseded, and the supersession process is itself
+ *   information. A mutable file shows only the result; the ledger shows
+ *   "held this in March → overturned by that evidence in June → changed back
+ *   in September".
+ * - The ledger is plain-text JSONL: human-readable, git-diffable, deletable,
+ *   hand-editable.
+ * - The graph, backlinks and active set are all derived by folding. They can be
+ *   rebuilt at any time and lose nothing when deleted, matching DSH's official
+ *   position that the session log is the only source of truth and plugin memory
+ *   is a derived cache.
  *
- * 本模块是**纯函数**（不碰文件系统），所以测试可以直接喂事件数组。
+ * Pure functions only (no filesystem), so tests can feed event arrays directly.
  *
- * 事件类型（全部只追加，永不修改历史行）：
- *   node.created     新判断 / 新规则落地
- *   node.revised     改文字（保留历史版本，不算推翻）
- *   node.superseded  被新判断取代（双时态：关掉旧的 valid_to，**不删**）
- *   node.withdrawn   撤回（自己发现错了，但没被谁取代）
- *   edge.linked      建立双链
- *   edge.unlinked    解除双链
- *   rule.amended     规则变更（治理：带理由、可回滚）
+ * Event types (all append-only; historical lines are never modified):
+ *   node.created      a judgment or rule is recorded
+ *   node.revised      text changed (history kept, not a supersession)
+ *   node.superseded   replaced by a newer judgment (bi-temporal: the old
+ *                     valid_to is closed, never deleted)
+ *   node.withdrawn    withdrawn after a self-detected error, with no successor
+ *   edge.linked       bidirectional link created
+ *   edge.unlinked     bidirectional link removed
+ *   rule.amended      rule change (governed: carries a reason, rollback-able)
  */
 
-/** 账本里被承认的事件类型。不认识的类型会被记为 problem，绝不静默吞掉。 */
+/** Event types the ledger recognizes. Unknown types are recorded as a problem, never silently swallowed. */
 export const EVENT_TYPES = Object.freeze([
   'node.created',
   'node.revised',
@@ -31,7 +37,7 @@ export const EVENT_TYPES = Object.freeze([
   'rule.amended',
 ])
 
-/** 节点状态。只有 active 参与检索与注入。 */
+/** Node status. Only active nodes take part in search and injection. */
 export const STATUS = Object.freeze({
   ACTIVE: 'active',
   SUPERSEDED: 'superseded',
@@ -39,16 +45,19 @@ export const STATUS = Object.freeze({
 })
 
 /**
- * 节点种类。
+ * Node kinds.
  *
- * - `judgment` 判断：被证据推翻后会被取代（会进化）
- * - `rule`     规矩：给自己定的约束，变更要走治理（可审计、可回滚）
- * - `insight`  思考：没有主语/宾语三角的**灵感与观察** ——
- *              它们的价值在"被记住"，而不是"被较真"，
- *              所以**不参与取代判定**（没有 key 就存不成判断，
- *              强行三元组化反而会逼 AI 编造结构）。
+ * - `judgment`  superseded when evidence overturns it (it evolves)
+ * - `rule`      a constraint on itself; changes go through governance
+ *               (auditable, rollback-able)
+ * - `insight`   an idea or observation with no subject/relation/object triple.
+ *               Its value is being remembered, not being held to account, so it
+ *               takes no part in supersession. Without a key it cannot be
+ *               stored as a judgment, and forcing a triple would make the
+ *               model fabricate structure.
  *
- * 旧账本里只有前两种；新类型只增不改，老数据照常读取。
+ * Older ledgers contain only the first two kinds. New kinds are additive;
+ * existing data still reads.
  */
 export const KIND = Object.freeze({
   JUDGMENT: 'judgment',
@@ -57,8 +66,8 @@ export const KIND = Object.freeze({
 })
 
 /**
- * 建一个空状态。
- * @returns {object} 可被 applyEvent 就地更新的状态对象。
+ * Create an empty state.
+ * @returns {object} State object that applyEvent updates in place.
  */
 export function createState() {
   return {
@@ -70,22 +79,23 @@ export function createState() {
 }
 
 /**
- * 把一条事件就地应用到状态上。
+ * Apply one event to the state in place.
  *
- * 刻意保持**纯同步、无 IO、无异常**：坏事件被记进 problems 而不是抛出，
- * 因为一条坏行不该让整个记忆库读不出来（那等于记忆全丢）。
+ * Deliberately pure, synchronous, IO-free and exception-free: a bad event is
+ * recorded in problems rather than thrown, because one bad line must not make
+ * the whole memory store unreadable — that would mean losing all memory.
  *
- * @param {object} state - createState() 的产物。
- * @param {object} ev - 账本事件 `{ seq, at, type, data }`。
- * @returns {object} 同一个 state（便于 reduce）。
+ * @param {object} state - Product of createState().
+ * @param {object} ev - Ledger event `{ seq, at, type, data }`.
+ * @returns {object} The same state (convenient for reduce).
  */
 export function applyEvent(state, ev) {
   if (ev === null || typeof ev !== 'object') {
-    state.problems.push({ at: 'fold', reason: '事件不是对象', raw: ev })
+    state.problems.push({ at: 'fold', reason: 'event is not an object', raw: ev })
     return state
   }
   if (!EVENT_TYPES.includes(ev.type)) {
-    state.problems.push({ at: 'fold', reason: `未知事件类型 ${String(ev.type)}`, seq: ev.seq })
+    state.problems.push({ at: 'fold', reason: `unknown event type ${String(ev.type)}`, seq: ev.seq })
     return state
   }
   const d = ev.data ?? {}
@@ -95,27 +105,27 @@ export function applyEvent(state, ev) {
     case 'node.created': {
       const id = typeof d.id === 'string' && d.id !== '' ? d.id : `n_${String(ev.seq ?? 0).padStart(4, '0')}`
       if (state.nodes.has(id)) {
-        state.problems.push({ at: 'fold', reason: `节点 id 重复：${id}`, seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: `duplicate node id: ${id}`, seq: ev.seq })
         break
       }
       state.nodes.set(id, {
         id,
         kind: d.kind === KIND.RULE || d.kind === KIND.INSIGHT ? d.kind : KIND.JUDGMENT,
         text: typeof d.text === 'string' ? d.text : '',
-        // 确定性取代用的三元组。缺任一项则该节点只参与检索、不参与取代。
+        // Triple used for deterministic supersession. If any component is missing, the node takes part in search only, never in supersession.
         subject: typeof d.subject === 'string' && d.subject !== '' ? d.subject : null,
         relation: typeof d.relation === 'string' && d.relation !== '' ? d.relation : null,
         object: typeof d.object === 'string' && d.object !== '' ? d.object : null,
         tags: Array.isArray(d.tags) ? d.tags.filter((t) => typeof t === 'string') : [],
         citations: Array.isArray(d.citations) ? d.citations.filter((c) => typeof c === 'string') : [],
         createdAt: at,
-        // 双时态账本：validFrom/validTo 是「事实何时为真」，createdAt 是「系统何时知道」。
+        // Bi-temporal ledger: validFrom/validTo say when the fact was true, createdAt says when the system learned it.
         validFrom: at,
         validTo: null,
         supersededBy: null,
         status: STATUS.ACTIVE,
         revision: 1,
-        history: [{ at, text: typeof d.text === 'string' ? d.text : '', reason: '建立' }],
+        history: [{ at, text: typeof d.text === 'string' ? d.text : '', reason: 'created' }],
       })
       break
     }
@@ -123,7 +133,7 @@ export function applyEvent(state, ev) {
     case 'node.revised': {
       const n = state.nodes.get(d.id)
       if (n === undefined) {
-        state.problems.push({ at: 'fold', reason: `改文字指向不存在的节点：${String(d.id)}`, seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: `text revision points at a missing node: ${String(d.id)}`, seq: ev.seq })
         break
       }
       const before = n.text
@@ -132,7 +142,7 @@ export function applyEvent(state, ev) {
       if (typeof d.relation === 'string' && d.relation !== '') n.relation = d.relation
       if (typeof d.object === 'string' && d.object !== '') n.object = d.object
       n.revision += 1
-      n.history.push({ at, text: n.text, before, reason: typeof d.reason === 'string' ? d.reason : '修订' })
+      n.history.push({ at, text: n.text, before, reason: typeof d.reason === 'string' ? d.reason : 'revised' })
       break
     }
 
@@ -142,28 +152,28 @@ export function applyEvent(state, ev) {
       if (old === undefined || by === undefined) {
         state.problems.push({
           at: 'fold',
-          reason: `取代指向不存在的节点：${String(d.id)} → ${String(d.byId)}`,
+          reason: `supersession points at a missing node: ${String(d.id)} → ${String(d.byId)}`,
           seq: ev.seq,
         })
         break
       }
-      // 关键：**退役而不删除**。旧节点留在账本里，供 as-of-time 查询与"进化轨迹"。
+      // Key: retired, never deleted. The old node stays in the ledger for as-of-time queries and provenance.
       old.status = STATUS.SUPERSEDED
       old.validTo = at
       old.supersededBy = by.id
-      old.history.push({ at, text: old.text, reason: `被 ${by.id} 取代：${String(d.reason ?? '')}` })
+      old.history.push({ at, text: old.text, reason: `superseded by ${by.id}: ${String(d.reason ?? '')}` })
       break
     }
 
     case 'node.withdrawn': {
       const n = state.nodes.get(d.id)
       if (n === undefined) {
-        state.problems.push({ at: 'fold', reason: `撤回指向不存在的节点：${String(d.id)}`, seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: `withdrawal points at a missing node: ${String(d.id)}`, seq: ev.seq })
         break
       }
       n.status = STATUS.WITHDRAWN
       n.validTo = at
-      n.history.push({ at, text: n.text, reason: `撤回：${String(d.reason ?? '')}` })
+      n.history.push({ at, text: n.text, reason: `withdrawn: ${String(d.reason ?? '')}` })
       break
     }
 
@@ -173,16 +183,16 @@ export function applyEvent(state, ev) {
       if (from === undefined || to === undefined) {
         state.problems.push({
           at: 'fold',
-          reason: `双链指向不存在的节点：${String(d.from)} → ${String(d.to)}`,
+          reason: `link points at a missing node: ${String(d.from)} → ${String(d.to)}`,
           seq: ev.seq,
         })
         break
       }
       if (from.id === to.id) {
-        state.problems.push({ at: 'fold', reason: '不允许自连', seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: 'self-links are not allowed', seq: ev.seq })
         break
       }
-      // 去重键 = 起点 + 终点 + 类型。同一对节点可以有多种关系（互补 + 矛盾并存）。
+      // Dedup key = from + to + type, so one node pair can carry several relations (a complement and a tension can coexist).
       const key = `${from.id}\u0000${to.id}\u0000${String(d.type ?? 'related')}`
       if (state.edges.some((e) => `${e.from}\u0000${e.to}\u0000${e.type}` === key)) break
       state.edges.push({
@@ -206,10 +216,10 @@ export function applyEvent(state, ev) {
     }
 
     case 'rule.amended': {
-      // 规则以节点承载（kind: 'rule'），变更理由与前后文留在事件里 → 可审计、可回滚。
+      // Rules are carried by nodes (kind: 'rule'); the reason and the before/after text stay in the event, so changes are auditable and rollback-able.
       const n = state.nodes.get(d.id)
       if (n === undefined) {
-        state.problems.push({ at: 'fold', reason: `规则变更指向不存在的节点：${String(d.id)}`, seq: ev.seq })
+        state.problems.push({ at: 'fold', reason: `rule amendment points at a missing node: ${String(d.id)}`, seq: ev.seq })
         break
       }
       const before = n.text
@@ -219,7 +229,7 @@ export function applyEvent(state, ev) {
         at,
         text: n.text,
         before,
-        reason: typeof d.reason === 'string' ? d.reason : '规则变更',
+        reason: typeof d.reason === 'string' ? d.reason : 'rule amended',
         amendment: true,
       })
       break
@@ -234,9 +244,9 @@ export function applyEvent(state, ev) {
 }
 
 /**
- * 折叠整个事件序列成当前状态。这是唯一的"读"路径。
- * @param {object[]} events - 按 seq 升序的事件数组。
- * @returns {object} 状态（含 nodes / edges / seq / problems）。
+ * Fold the whole event sequence into the current state. This is the only read path.
+ * @param {object[]} events - Events in ascending seq order.
+ * @returns {object} State (with nodes / edges / seq / problems).
  */
 export function foldEvents(events) {
   const state = createState()
@@ -244,33 +254,34 @@ export function foldEvents(events) {
   return state
 }
 
-/** 当前活跃节点。只有这些参与检索、注入与取代判定。 */
+/** Currently active nodes. Only these take part in search, injection and supersession. */
 export function activeNodes(state) {
   return [...state.nodes.values()].filter((n) => n.status === STATUS.ACTIVE)
 }
 
-/** 按 id 取节点。 */
+/** Look up a node by id. */
 export function nodeOf(state, id) {
   return state.nodes.get(id) ?? undefined
 }
 
-/** 某节点的入边（谁引用了我）—— 反向链接。 */
+/** Incoming edges of a node (who references it): backlinks. */
 export function backlinksOf(state, id) {
   return state.edges.filter((e) => e.to === id)
 }
 
-/** 某节点的出边（我引用了谁）。 */
+/** Outgoing edges of a node (what it references). */
 export function outlinksOf(state, id) {
   return state.edges.filter((e) => e.from === id)
 }
 
 /**
- * 沿取代链走到底，看一个判断最终演化成了什么。
- * 这是"进化轨迹"的实现：往回能追来路，往前能追去向。
+ * Walk a supersession chain to its end to see what a judgment eventually became.
+ * This is the provenance implementation: backwards reaches the origin, forwards
+ * reaches the outcome.
  *
- * @param {object} state - 折叠后的状态。
- * @param {string} id - 起始节点 id。
- * @returns {{chain: object[], terminal: object|undefined}} 取代链与链尾。
+ * @param {object} state - Folded state.
+ * @param {string} id - Starting node id.
+ * @returns {{chain: object[], terminal: object|undefined}} Supersession chain and its terminal node.
  */
 export function supersedeChain(state, id) {
   const chain = []
@@ -286,20 +297,21 @@ export function supersedeChain(state, id) {
 }
 
 /**
- * **双时态查询**：把账本折叠到「T 时刻的样子」。
+ * Bi-temporal query: fold the ledger into the state as of time T.
  *
- * 这是账本式存储换来的核心能力 —— 文件式记忆做不到：
- *   validFrom / validTo 记录「事实何时为真」（valid time），
- *   createdAt 记录「系统何时知道」（transaction time）。
- *   只要截取 `at <= T` 的事件前缀再折叠，就得到 T 时刻的确切状态。
+ * This is the core capability ledger storage buys, and file-based memory cannot
+ * provide it: validFrom / validTo record valid time (when the fact was true),
+ * while createdAt records transaction time (when the system learned it). Taking
+ * the event prefix with `at <= T` and folding it yields the exact state at T.
  *
- * 为什么这样是对的（而不是"近似"）：账本是**只追加**的，
- * 所以任意时刻的状态都是它之前事件前缀的纯函数。这正是 DSH 官方
- * 「一切必须能从已提交事件重建」那条原则在插件侧的落地。
+ * Why this is exact rather than approximate: the ledger is append-only, so the
+ * state at any moment is a pure function of the event prefix before it. This is
+ * DSH's "everything must be reconstructable from committed events" principle
+ * applied on the plugin side.
  *
- * @param {object[]} events - 全量事件（可按 seq 升序，内部会再过滤）。
- * @param {number} at - Unix 毫秒时间戳。
- * @returns {object} T 时刻的状态（结构与 foldEvents 相同）。
+ * @param {object[]} events - All events (ascending seq order; filtered internally).
+ * @param {number} at - Unix millisecond timestamp.
+ * @returns {object} State at T (same shape as foldEvents).
  */
 export function foldAsOf(events, at) {
   const prefix = []
@@ -311,14 +323,14 @@ export function foldAsOf(events, at) {
 }
 
 /**
- * 在某个时刻，某条断言键上「活跃的是哪一条」。
+ * Which node is active on an assertion key at a given moment.
  *
- * 这是双时态查询最常用的问法：「3 月的时候，我认为端口是多少？」
+ * The most common bi-temporal question: "which port was in force in March?"
  *
- * @param {object[]} events - 全量事件。
- * @param {number} at - 查询时刻。
- * @param {string} key - assertionKey() 产出的键。
- * @returns {object|undefined} 那一刻活跃的节点；没有则 undefined。
+ * @param {object[]} events - All events.
+ * @param {number} at - Query moment.
+ * @param {string} key - Key produced by assertionKey().
+ * @returns {object|undefined} Node active at that moment; undefined when none.
  */
 export function activeAssertionAsOf(events, at, key) {
   const state = foldAsOf(events, at)

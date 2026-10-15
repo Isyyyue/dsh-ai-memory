@@ -1,42 +1,49 @@
 /**
- * 工具定义（零依赖）。
+ * Tool definitions (zero dependencies).
  *
- * ⚠️ 为什么这里**不 import `@deepseek-ai/dsh-tools` 的 defineTool**：
- * 插件以 `link:`（junction）方式装进 profile 时**拿不到自己的 node_modules**
- * （dsh-balance-pill 与 viya-memory 都踩过这个坑，表现为"装的时候好使，一重启就没了"）。
- * 而 `ctx.tools.register()` 只校验定义对象的形状，`parameters` 与 `output.schema`
- * 收的是**原始 JSON Schema**（读 dsh-tools/lib/index.js:2874 的 register 实现确认）。
- * 所以手写 JSON Schema 既合法又零依赖。
+ * ⚠️ Why this file does **not** import `defineTool` from
+ * `@deepseek-ai/dsh-tools`: when a plugin is installed into a profile via
+ * `link:` (a junction) it gets **no own `node_modules`** (dsh-balance-pill and
+ * viya-memory both hit this; the symptom is "works right after install, gone
+ * after a restart"). `ctx.tools.register()` only validates the shape of the
+ * definition object, and `parameters` / `output.schema` accept **raw JSON
+ * Schema** (confirmed by reading the register implementation at
+ * dsh-tools/lib/index.js:2874). Hand-written JSON Schema is therefore both
+ * valid and dependency-free.
  *
- * ⚠️ 一个被测试抓到的真 bug（正是"静默失效"那一类）：
- * `register()` 收的 `parameters` 是**完整 JSON Schema**（内部会 `jsonSchemaToTs(schema.parameters)`
- * 渲染 SDK），**不是** `defineTool` 那种裸属性表。写成裸属性表**不会在 register 时抛错** ——
- * 它被原样塞进 ToolSchema，等到渲染 SDK / 组装 prompt 时才以奇怪的方式坏掉。
- * 所以 `tool()` 负责把作者写的简写（属性表 + `required: true`）编译成
- * `{ type: 'object', properties, required }`。
+ * ⚠️ A real bug that tests caught, of the "silent failure" kind:
+ * `register()` takes `parameters` as a **complete JSON Schema** (it runs
+ * `jsonSchemaToTs(schema.parameters)` internally to render the SDK), **not** the
+ * bare property table `defineTool` expects. Passing a bare property table does
+ * **not** throw at register time — it is stored verbatim into ToolSchema and
+ * only breaks later, in strange ways, when the SDK is rendered or the prompt is
+ * assembled. So `tool()` compiles the authoring shorthand (property table plus
+ * `required: true`) into `{ type: 'object', properties, required }`.
  *
- * JSON Schema 子集限制（照 dsh-tools 的 assertSupportedJsonSchema）：
- *   支持 type: object / array / string / number / integer / boolean / null
- *   支持 properties / required / additionalProperties / items / enum / const / oneOf
- *   不支持 $ref / patternProperties / 类型数组
+ * JSON Schema subset limits (per dsh-tools' assertSupportedJsonSchema):
+ *   supported: type object / array / string / number / integer / boolean / null
+ *              properties / required / additionalProperties / items / enum /
+ *              const / oneOf
+ *   unsupported: $ref / patternProperties / type arrays
  */
 
-/** 六条关系类型。前三种对应规格里的「互补 / 矛盾 / 取代」，后三种是自然扩展。 */
+/** The six relation types. The first three match the spec's complement / tension / supersession; the rest are natural extensions. */
 export const LINK_TYPES = Object.freeze([
-  'complements', // 互补：两条判断互相补强
-  'tensions',    // 矛盾：两条判断互相冲突（但不构成取代）
-  'supersedes',  // 取代：新的推翻了旧的（由引擎自动建立）
-  'derives',     // 衍生：从对方推出来的
-  'depends',     // 依据：我依赖对方成立
-  'restates',    // 复述：同一断言
+  'complements', // both judgments reinforce each other
+  'tensions',    // the two conflict (but this is not a supersession)
+  'supersedes',  // the new one overturns the old (created by the engine, never by hand)
+  'derives',     // one is derived from the other
+  'depends',     // this one depends on the other holding
+  'restates',    // the same assertion
 ])
 
 /**
- * 造一个工具定义的公共外壳，并把简写参数表编译成 JSON Schema。
+ * Build the common shell of a tool definition and compile the shorthand
+ * parameter table into JSON Schema.
  *
- * @param {object} spec - `{ name, description, parameters, schema, render, execute }`。
- *   `parameters` 是属性表：每个值可带 `required: true`。
- * @returns {object} 可交给 ctx.tools.register() 的定义。
+ * @param {object} spec - `{ name, description, parameters, schema, render, execute }`.
+ *   `parameters` is a property table; each value may carry `required: true`.
+ * @returns {object} a definition suitable for ctx.tools.register().
  */
 function tool(spec) {
   const raw = spec.parameters ?? {}
@@ -65,30 +72,33 @@ function tool(spec) {
   }
 }
 
-/** 可选字符串参数。 */
+/** An optional string parameter. */
 const str = (description) => ({ type: 'string', description })
-/** 必填字符串参数。 */
+/** A required string parameter. */
 const strReq = (description) => ({ type: 'string', description, required: true })
-/** 可选字符串数组参数。 */
+/** An optional array-of-strings parameter. */
 const strArray = (description) => ({ type: 'array', items: { type: 'string' }, description })
 
 /**
- * 六个工具的定义。每个都返回**模型可读的 JSON**，且都遵守"确定性、零 LLM"。
+ * The six tool definitions. Each returns **model-readable JSON** and each obeys
+ * the "deterministic, zero LLM" rule.
  *
- * @param {object} deps - `{ search, write, connect, rule, history, stats }` 六个实现函数。
- * @returns {object[]} 工具定义数组。
+ * @param {object} deps - the six implementations: `{ search, write, connect, rule, history, stats }`.
+ * @returns {object[]} array of tool definitions.
  */
 export function buildTools(deps) {
   return [
     tool({
       name: 'memory_search',
       description:
-        '在已有判断里检索。**写新判断之前必须先调用它**，看是否已有相关判断（可能已有、可能矛盾）。' +
-        '中文按二字滑窗检索，英文按词。返回判断原文、状态与相关度。',
+        'Search your existing judgments. **Call this before writing a new judgment**, ' +
+        'to see whether something related already exists (it may already exist, or it may conflict). ' +
+        'Chinese is tokenized by two-character sliding window; English by word. ' +
+        'Returns the judgment text, its status and a relevance score.',
       parameters: {
-        query: strReq('检索词。空格分隔多个词时默认 AND（都要命中）；放宽为 OR 时结果里会标 relaxed'),
-        limit: { type: 'integer', description: '最多返回几条，默认 10' },
-        include_retired: { type: 'boolean', description: '是否包含已被取代/撤回的判断（默认否）' },
+        query: strReq('Search terms. Space-separated terms default to AND (all must match); when relaxed to OR the result is flagged `relaxed`.'),
+        limit: { type: 'integer', description: 'Maximum number of results; defaults to 10.' },
+        include_retired: { type: 'boolean', description: 'Include superseded / withdrawn judgments (default: no).' },
       },
       schema: {
         type: 'object',
@@ -100,13 +110,13 @@ export function buildTools(deps) {
             items: {
               type: 'object',
               properties: {
-                id: str('判断 id'),
-                text: str('判断原文'),
+                id: str('judgment id'),
+                text: str('the judgment text'),
                 status: str('active / superseded / withdrawn'),
                 kind: str('judgment / rule / insight'),
                 score: { type: 'number' },
-                superseded_by: str('被谁取代'),
-                links: { type: 'array', items: { type: 'string' }, description: '出链' },
+                superseded_by: str('which judgment superseded this one'),
+                links: { type: 'array', items: { type: 'string' }, description: 'outgoing links' },
               },
               required: ['id', 'text', 'status'],
             },
@@ -120,31 +130,34 @@ export function buildTools(deps) {
     tool({
       name: 'memory_write',
       description:
-        '记下一条**判断**（不是事实）。写之前必须先 memory_search。' +
-        '如果给出 subject/relation/object 三元组，引擎会做**确定性取代**：' +
-        '同 (subject, relation) 键但 object 不同时，新判断自动取代旧判断（旧的退役但保留，可追溯）。' +
-        '缺三元组则作为普通判断存入，不参与取代。' +
-        '判据是结构性的，**不看文字像不像** —— 这是刻意的（相似度无法区分矛盾与复述）。' +
-        '三种 kind：judgment（我会坚持的判断，可被取代）、rule（给自己的约束，受治理）、' +
-        'insight（还没成形到能当判断的**想法/观察/疑问** —— 不参与取代，因为强行给它们编三元组只会造假结构）。',
+        'Record a **judgment** (not a fact). Call memory_search first. ' +
+        'Given a subject/relation/object triple, the engine performs **deterministic supersession**: ' +
+        'when the (subject, relation) key matches but the object differs, the new judgment supersedes the old one ' +
+        '(the old one retires but is kept, so its provenance stays visible). ' +
+        'Without a triple the text is stored as an ordinary judgment and takes no part in supersession. ' +
+        'The test is structural and **does not look at textual similarity** — deliberately, since similarity ' +
+        'cannot separate contradiction from restatement. ' +
+        'Three kinds: judgment (a position you will hold, supersedable), rule (a constraint you set for yourself, governed), ' +
+        'insight (an **idea / observation / question** not yet settled into a judgment — not superseded, because forcing ' +
+        'a triple onto it would fabricate structure that is not there).',
       parameters: {
-        text: strReq('判断本身，就是那句话。只写判断，不写事实。'),
-        subject: str('可选。三元组主语，如 "svc"、"本项目"'),
-        relation: str('可选。三元组关系，如 "port"、"测试框架"'),
-        object: str('可选。三元组宾语（可变的那个值），如 "8080"'),
-        kind: str('judgment（默认）/ rule（规矩，受治理）/ insight（想法、观察、疑问，不参与取代）'),
-        tags: strArray('可选标签'),
-        citations: strArray('可选。这条判断的依据出处（会话 id、文件路径等）—— 引用是记忆的一等公民'),
-        reason: str('可选。若是取代旧判断，说明为什么改主意'),
+        text: strReq('The judgment itself, in one sentence. Write a judgment, not a fact.'),
+        subject: str('Optional. Triple subject, e.g. "svc", "this project".'),
+        relation: str('Optional. Triple relation, e.g. "port", "test framework".'),
+        object: str('Optional. Triple object (the value that can change), e.g. "8080".'),
+        kind: str('judgment (default) / rule (a constraint, governed) / insight (an idea, observation or question; not superseded).'),
+        tags: strArray('Optional tags.'),
+        citations: strArray('Optional. Where this judgment came from (session id, file path, …) — citations are first-class here.'),
+        reason: str('Optional. When superseding an older judgment, say why you changed your mind.'),
       },
       schema: {
         type: 'object',
         properties: {
           action: str('created / supersede / duplicate / rejected / failed'),
-          node_id: str('新判断的 id（duplicate 时是既有判断的 id）'),
-          superseded_id: str('被取代的旧判断 id'),
-          superseded_text: str('被取代的旧判断原文摘要'),
-          note: str('人可读的结果说明'),
+          node_id: str('id of the new judgment (on duplicate, the id of the existing one)'),
+          superseded_id: str('id of the judgment this one superseded'),
+          superseded_text: str('summary of the superseded judgment'),
+          note: str('human-readable explanation of the outcome'),
         },
         required: ['action', 'note'],
       },
@@ -154,18 +167,18 @@ export function buildTools(deps) {
     tool({
       name: 'memory_connect',
       description:
-        '在两条判断之间建一条**双链**。两边都会看到这条关系（不留单向边）。' +
-        '关系类型：complements（互补）/ tensions（矛盾）/ derives（衍生）/ depends（依据）/ restates（复述）。' +
-        'supersedes 由引擎自动建立，不要手工指定。',
+        'Create a **bidirectional link** between two judgments. Both sides see the relation (no one-way edges). ' +
+        'Relation types: complements / tensions / derives / depends / restates. ' +
+        'supersedes is created by the engine automatically; do not specify it by hand.',
       parameters: {
-        from: strReq('起点判断 id'),
-        to: strReq('终点判断 id'),
-        type: str('关系类型，默认 complements'),
-        note: str('可选。说明这两条为什么是这种关系'),
+        from: strReq('id of the source judgment.'),
+        to: strReq('id of the target judgment.'),
+        type: str('Relation type; defaults to complements.'),
+        note: str('Optional. Why these two are related this way.'),
       },
       schema: {
         type: 'object',
-        properties: { ok: { type: 'boolean' }, note: str('结果说明') },
+        properties: { ok: { type: 'boolean' }, note: str('') },
         required: ['ok', 'note'],
       },
       execute: (args) => deps.connect(args),
@@ -174,11 +187,12 @@ export function buildTools(deps) {
     tool({
       name: 'memory_history',
       description:
-        '看一条判断的**演化轨迹**：它改过几次、被谁取代、取代链走到哪儿。' +
-        '这是"进化"的证据 —— 能看见来路，而不只是当前状态。',
+        'See one judgment\'s **trajectory**: how many times it changed, what superseded it, and where the ' +
+        'supersession chain leads. This is the evidence of evolution — you can see where something came from, ' +
+        'not just what it is now.',
       parameters: {
-        id: strReq('判断 id'),
-        at: { type: 'integer', description: '可选。Unix 毫秒时间戳，看"那一刻"这条判断是什么样（双时态查询）' },
+        id: strReq('judgment id'),
+        at: { type: 'integer', description: 'Optional. Unix epoch milliseconds; shows what this judgment looked like at that instant (bi-temporal query).' },
       },
       schema: {
         type: 'object',
@@ -188,7 +202,7 @@ export function buildTools(deps) {
             type: 'array',
             items: {
               type: 'object',
-              properties: { at: { type: 'integer' }, text: str('那一版的内容'), reason: str('为什么改') },
+              properties: { at: { type: 'integer' }, text: str('the text at that revision'), reason: str('why it changed') },
               required: ['at', 'text'],
             },
           },
@@ -210,17 +224,17 @@ export function buildTools(deps) {
     tool({
       name: 'memory_rule',
       description:
-        '读、改、或回滚**规矩**（kind: rule）。规矩是给自己的约束，与判断分开治理：' +
-        '每次变更都要说明理由，全部留痕、可审计、可回滚。' +
-        'action=read 读当前规矩；action=amend 改规矩（必须给 reason）；' +
-        'action=rollback 恢复到历史某一版（必须给 reason 与 to_revision）—— ' +
-        '回滚本身也是一次新变更，所以**历史不会被抹掉**。',
+        'Read, amend or roll back a **rule** (kind: rule). Rules are constraints you set for yourself and are ' +
+        'governed separately from judgments: every change states a reason, everything is on record, auditable and ' +
+        'reversible. action=read reads current rules; action=amend changes one (a reason is required); ' +
+        'action=rollback restores an earlier revision (a reason and to_revision are required) — ' +
+        'a rollback is itself a new change, so **history is never erased**.',
       parameters: {
         action: strReq('read / amend / rollback'),
-        id: str('规矩的 id（amend 与 rollback 时必填；read 时省略则列出全部规矩）'),
-        text: str('amend 时的新规矩全文'),
-        reason: str('amend 与 rollback 时必填。为什么改/为什么回滚'),
-        to_revision: { type: 'integer', description: 'rollback 时恢复到第几版（从 1 开始，对应 read 里 history 的序号）' },
+        id: str('Rule id (required for amend and rollback; omit on read to list every rule).'),
+        text: str('On amend, the full new rule text.'),
+        reason: str('Required for amend and rollback. Why the change, why the rollback.'),
+        to_revision: { type: 'integer', description: 'On rollback, which revision to restore (1-based, indexing the history returned by read).' },
       },
       schema: {
         type: 'object',
@@ -234,7 +248,7 @@ export function buildTools(deps) {
                 id: str(''),
                 text: str(''),
                 revision: { type: 'integer' },
-                history: { type: 'array', items: { type: 'string' }, description: '变更留痕（含回滚）' },
+                history: { type: 'array', items: { type: 'string' }, description: 'change log (including rollbacks)' },
               },
               required: ['id', 'text'],
             },
@@ -248,7 +262,7 @@ export function buildTools(deps) {
 
     tool({
       name: 'memory_stats',
-      description: '记忆库体检：判断数、规矩数、被取代数、双链数、孤立判断、数据问题。只读，不改任何东西。',
+      description: 'Health check on the memory store: judgment count, rule count, superseded count, link count, orphan judgments, data problems. Read-only; changes nothing.',
       parameters: {},
       schema: {
         type: 'object',
@@ -257,8 +271,8 @@ export function buildTools(deps) {
           rules: { type: 'integer' },
           retired: { type: 'integer' },
           edges: { type: 'integer' },
-          orphans: { type: 'integer', description: '一条链都没有的判断数' },
-          problems: { type: 'array', items: { type: 'string' }, description: '账本里的数据问题' },
+          orphans: { type: 'integer', description: 'number of judgments with no links at all' },
+          problems: { type: 'array', items: { type: 'string' }, description: 'data problems found in the ledger' },
           note: str(''),
         },
         required: ['judgments', 'rules', 'retired', 'edges'],

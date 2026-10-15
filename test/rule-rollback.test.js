@@ -58,7 +58,7 @@ describe('规矩 · 回滚', () => {
       const id = made.rules[0].id
       const r = ops.rule({ action: 'rollback', id, to_revision: 5, reason: '试' })
       assert.equal(r.ok, false)
-      assert.match(r.note, /只有 1 版/)
+      assert.match(r.note, /only 1 revision/)
     } finally { done() }
   })
 
@@ -69,7 +69,7 @@ describe('规矩 · 回滚', () => {
       const id = made.rules[0].id
       const r = ops.rule({ action: 'rollback', id, to_revision: 1, reason: '试' })
       assert.equal(r.ok, false)
-      assert.match(r.note, /无需回滚/)
+      assert.match(r.note, /nothing to roll back/)
     } finally { done() }
   })
 
@@ -123,7 +123,7 @@ describe('规矩 · 回滚', () => {
     try {
       const r = ops.rule({ action: 'rollback', id: 'ghost', to_revision: 1, reason: '试' })
       assert.equal(r.ok, false)
-      assert.match(r.note, /找不到/)
+      assert.match(r.note, /No rule/)
     } finally { done() }
   })
 
@@ -133,7 +133,7 @@ describe('规矩 · 回滚', () => {
       const j = ops.write({ text: '一条判断' })
       const r = ops.rule({ action: 'rollback', id: j.node_id, to_revision: 1, reason: '试' })
       assert.equal(r.ok, false)
-      assert.match(r.note, /不是规矩/)
+      assert.match(r.note, /is not a rule/)
     } finally { done() }
   })
 
