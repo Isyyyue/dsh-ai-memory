@@ -40,9 +40,9 @@ const END = '// <<< WORKER-SOURCE <<<'
 const beginIdx = clientSrc.indexOf(BEGIN)
 const endIdx = clientSrc.indexOf(END)
 if (beginIdx < 0 || endIdx < 0 || endIdx < beginIdx) {
-  console.log('✗ Marked region not found. Add the following to client.js first:')
+  console.log('✗ 找不到标记区。请先在 client.js 里放上：')
   console.log(`    ${BEGIN}`)
-  console.log('    (worker source)')
+  console.log('    （worker 源码）')
   console.log(`    ${END}`)
   process.exit(1)
 }
@@ -54,8 +54,8 @@ const block = `${BEGIN}\n    const WORKER_SOURCE = ${literal}\n    ${END}`
 const next = clientSrc.slice(0, beginIdx) + block + clientSrc.slice(endIdx + END.length)
 
 if (next === clientSrc) {
-  console.log(`✓ Already up to date (worker ${workerSrc.length} chars)`)
+  console.log(`✓ 已是最新（worker ${workerSrc.length} 字符）`)
 } else {
   writeFileSync(clientPath, next)
-  console.log(`✓ Worker source inlined (${workerSrc.length} chars → client.js is now ${next.length} chars)`)
+  console.log(`✓ 已内联 worker 源码（${workerSrc.length} 字符 → client.js 现在 ${next.length} 字符）`)
 }

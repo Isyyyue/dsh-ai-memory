@@ -134,7 +134,7 @@ export function planWrite(state, input, ctx) {
         action: 'duplicate',
         nodeId: verdict.target.id,
         text: verdict.target.text,
-        note: 'Same assertion as an existing judgment (identical subject/relation/object); no node was created.',
+        note: '这条判断与既有判断是同一断言（同 subject/relation/object），未新建节点。',
       },
     }
   }
@@ -164,7 +164,7 @@ export function planWrite(state, input, ctx) {
       seq: take(),
       at,
       type: 'node.superseded',
-      data: { id: old.id, byId: ctx.newId, reason: input.reason ?? 'updated value for the same assertion' },
+      data: { id: old.id, byId: ctx.newId, reason: input.reason ?? '同一断言的更新值' },
     })
     // Supersession also leaves an edge, so the graph shows which node replaced which.
     events.push({
@@ -180,14 +180,14 @@ export function planWrite(state, input, ctx) {
         nodeId: ctx.newId,
         supersededId: old.id,
         supersededText: old.text,
-        note: `Deterministic supersession: same (subject, relation) key, different object. The old judgment is retired but kept in the ledger.`,
+        note: `确定性取代：同 (subject, relation) 键、不同 object。旧判断退役但保留在账本里。`,
       },
     }
   }
 
   return {
     events,
-    outcome: { action: 'created', nodeId: ctx.newId, note: 'New judgment recorded.' },
+    outcome: { action: 'created', nodeId: ctx.newId, note: '新判断已记录。' },
   }
 }
 

@@ -172,7 +172,7 @@ describe('operations · search and connect', () => {
     const a = ops.write({ text: 'A' })
     const r = ops.connect({ from: a.node_id, to: 'nope' })
     assert.equal(r.ok, false)
-    assert.match(r.note, /No judgment/)
+    assert.match(r.note, /找不到判断/)
   })
 
   test('a self-link is rejected', () => {
@@ -262,7 +262,7 @@ describe('operations · stats', () => {
     const s = ops.stats()
     assert.equal(s.judgments, 0)
     assert.equal(s.orphans, 0)
-    assert.match(s.note, /empty/)
+    assert.match(s.note, /空的/)
   })
 
   test('orphan judgments are counted', () => {
@@ -294,7 +294,7 @@ describe('index text · injected at session start', () => {
     ops.rule({ action: 'amend', id: 'r1', text: 'Write judgments, not facts', reason: 'created' })
     ops.write({ text: 'The graph only navigates; it carries no facts' })
     const text = buildIndexText(l, 40)
-    assert.match(text, /Rules you set for yourself/)
+    assert.match(text, /规矩（你给自己定的/)
     assert.match(text, /Write judgments, not facts/)
     assert.match(text, /graph only navigates/)
   })
@@ -312,7 +312,7 @@ describe('index text · injected at session start', () => {
     const ops = createOperations(l, { now: clock() })
     for (let i = 0; i < 10; i += 1) ops.write({ text: `judgment number ${i}` })
     const text = buildIndexText(l, 3)
-    assert.match(text, /first 3 listed/)
+    assert.match(text, /此处列前 3 条/)
   })
 
   test('**insights are injected too** — otherwise writing one is pointless', () => {
@@ -332,9 +332,9 @@ describe('index text · injected at session start', () => {
     ops.write({ text: 'Judgment: the port is 8080', subject: 'svc', relation: 'port', object: '8080' })
     ops.write({ text: 'Insight: perhaps another angle is needed', kind: 'insight' })
     const text = buildIndexText(l, 40)
-    assert.match(text, /Rules you set for yourself/)
-    assert.match(text, /Active judgments \(1 total\)/)
-    assert.match(text, /Ideas not yet settled into judgments/)
+    assert.match(text, /规矩（你给自己定的/)
+    assert.match(text, /活跃判断（共 1 条）/)
+    assert.match(text, /还没成形到能当判断的想法/)
   })
 
   test('insights get a smaller budget (they must not crowd out judgments)', () => {
@@ -343,7 +343,7 @@ describe('index text · injected at session start', () => {
     for (let i = 0; i < 10; i += 1) ops.write({ text: `insight number ${i}`, kind: 'insight' })
     // maxEntries=4 → an insight budget of 2
     const text = buildIndexText(l, 4)
-    assert.match(text, /newest 2 listed/)
+    assert.match(text, /此处列最新 2 条/)
   })
 })
 
@@ -485,7 +485,7 @@ describe('routes · security (/plugins/* does not pass session cookie validation
     const res = fakeRes()
     routes[0].handler({ url: '/x', socket: { remoteAddress: '10.0.0.9' }, headers: {} }, res)
     assert.equal(res.statusCode, 403)
-    assert.match(res.body, /loopback/)
+    assert.match(res.body, /回环/)
   })
 
   test('a cross-origin Origin header is rejected with 403', () => {
@@ -560,7 +560,7 @@ describe('routes · security (/plugins/* does not pass session cookie validation
       res,
     )
     assert.equal(res.statusCode, 500)
-    assert.match(res.body, /reading the memory store failed/)
+    assert.match(res.body, /读取记忆库失败/)
   })
 })
 

@@ -171,7 +171,7 @@ export function createOperations(lib, opts = {}) {
 
   const write = (args) => {
     const text = String(args?.text ?? '').trim()
-    if (text === '') return { action: 'rejected', note: 'A judgment cannot be empty.' }
+    if (text === '') return { action: 'rejected', note: '判断不能为空。' }
     const { state } = lib.load()
     const at = now()
     const newId = makeNodeId(at, state.seq + 1)
@@ -194,7 +194,7 @@ export function createOperations(lib, opts = {}) {
     )
     if (events.length > 0) {
       const res = lib.commit(events)
-      if (!res.ok) return { action: 'failed', note: `write to disk failed: ${res.reason}` }
+      if (!res.ok) return { action: 'failed', note: `写盘失败：${res.reason}` }
     }
     return {
       action: outcome.action,
@@ -209,22 +209,22 @@ export function createOperations(lib, opts = {}) {
     const from = String(args?.from ?? '')
     const to = String(args?.to ?? '')
     const type = String(args?.type ?? 'complements')
-    if (from === '' || to === '') return { ok: false, note: 'Both `from` and `to` are required.' }
-    if (from === to) return { ok: false, note: 'A judgment cannot be linked to itself.' }
+    if (from === '' || to === '') return { ok: false, note: 'from 与 to 都必填。' }
+    if (from === to) return { ok: false, note: '不能自连。' }
     const { state } = lib.load()
-    if (!state.nodes.has(from)) return { ok: false, note: `No judgment ${from}. Use memory_search to confirm the id.` }
-    if (!state.nodes.has(to)) return { ok: false, note: `No judgment ${to}. Use memory_search to confirm the id.` }
+    if (!state.nodes.has(from)) return { ok: false, note: `找不到判断 ${from}。先 memory_search 确认 id。` }
+    if (!state.nodes.has(to)) return { ok: false, note: `找不到判断 ${to}。先 memory_search 确认 id。` }
     const at = now()
     const res = lib.commit([{ seq: state.seq + 1, at, type: 'edge.linked', data: { from, to, type, note: String(args?.note ?? '') } }])
-    if (!res.ok) return { ok: false, note: `write to disk failed: ${res.reason}` }
-    return { ok: true, note: `Linked ${from} and ${to} as ${type} (both sides see it; no one-way edges).` }
+    if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
+    return { ok: true, note: `已在 ${from} 与 ${to} 之间建立 ${type} 关系（两边都会看到，不留单向边）。` }
   }
 
   const history = (args) => {
     const id = String(args?.id ?? '')
     const { events, state } = lib.load()
     const n = nodeOf(state, id)
-    if (n === undefined) return { found: false, note: `No judgment ${id}.` }
+    if (n === undefined) return { found: false, note: `找不到判断 ${id}。` }
 
     // Bi-temporal query: with `at`, fold to that instant and answer "what did
     // this judgment look like then". A capability that ledger storage buys and
@@ -236,13 +236,13 @@ export function createOperations(lib, opts = {}) {
       const before = nodeOf(then, id)
       const when = new Date(at).toISOString()
       if (before === undefined) {
-        return { found: false, note: `At ${when} this judgment did not exist yet (it was created ${new Date(n.createdAt).toISOString()}).` }
+        return { found: false, note: `${when} 时这条判断还不存在（它建于 ${new Date(n.createdAt).toISOString()}）。` }
       }
       return {
         found: true,
         revisions: before.history.map((h) => ({ at: h.at, text: summarize(h.text, 200), reason: h.reason })),
         chain: supersedeChain(then, id).chain.map((c) => ({ id: c.id, text: summarize(c.text, 160), status: c.status })),
-        note: `At ${when}: status ${before.status}, revision ${before.revision}.`,
+        note: `${when} 那一刻：状态 ${before.status}，第 ${before.revision} 版。`,
       }
     }
 
@@ -251,7 +251,7 @@ export function createOperations(lib, opts = {}) {
       found: true,
       revisions: n.history.map((h) => ({ at: h.at, text: summarize(h.text, 200), reason: h.reason })),
       chain: chain.map((c) => ({ id: c.id, text: summarize(c.text, 160), status: c.status })),
-      note: `${n.history.length} change(s); supersession chain length ${chain.length}.`,
+      note: `共 ${n.history.length} 次变更；取代链长 ${chain.length}。`,
     }
   }
 
@@ -269,7 +269,7 @@ export function createOperations(lib, opts = {}) {
           revision: r.revision,
           history: r.history.map((h) => `${new Date(h.at).toISOString()} · ${h.reason}`),
         })),
-        note: rules.length === 0 ? 'No rules yet.' : `${rules.length} rule(s).`,
+        note: rules.length === 0 ? '还没有任何规矩。' : `共 ${rules.length} 条规矩。`,
       }
     }
 
@@ -279,8 +279,8 @@ export function createOperations(lib, opts = {}) {
       const reason = String(args?.reason ?? '').trim()
       // Governance: changing a rule requires a reason. A change without one is
       // refused — that is the precondition for "auditable".
-      if (reason === '') return { ok: false, note: 'Amending a rule requires a reason (deliberate: a change with no stated reason cannot be audited).' }
-      if (text === '') return { ok: false, note: 'The new rule cannot be empty.' }
+      if (reason === '') return { ok: false, note: '改规矩必须给 reason（这条纪律是刻意的：没有理由的变更无法审计）。' }
+      if (text === '') return { ok: false, note: '新规矩不能为空。' }
 
       if (!state.nodes.has(id)) {
         // A missing rule is created, and the reason is recorded as its rationale.
@@ -289,19 +289,19 @@ export function createOperations(lib, opts = {}) {
         const res = lib.commit([
           { seq: state.seq + 1, at, type: 'node.created', data: { id: newId, kind: KIND.RULE, text } },
         ])
-        if (!res.ok) return { ok: false, note: `write to disk failed: ${res.reason}` }
-        return { ok: true, rules: [{ id: newId, text, revision: 1, history: [] }], note: `Rule created (${newId}). Reason: ${reason}` }
+        if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
+        return { ok: true, rules: [{ id: newId, text, revision: 1, history: [] }], note: `新规矩已建立（${newId}）。理由：${reason}` }
       }
 
       const at = now()
       const res = lib.commit([{ seq: state.seq + 1, at, type: 'rule.amended', data: { id, after: text, reason } }])
-      if (!res.ok) return { ok: false, note: `write to disk failed: ${res.reason}` }
+      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
       const after = lib.load()
       const n = nodeOf(after.state, id)
       return {
         ok: true,
         rules: [{ id, text: n.text, revision: n.revision, history: n.history.map((h) => `${new Date(h.at).toISOString()} · ${h.reason}`) }],
-        note: `Rule amended (revision ${n.revision}). The reason is on record.`,
+        note: `规矩已改（第 ${n.revision} 版）。理由已留痕。`,
       }
     }
 
@@ -314,22 +314,22 @@ export function createOperations(lib, opts = {}) {
       const id = String(args?.id ?? '')
       const toRevision = Number(args?.to_revision)
       const reason = String(args?.reason ?? '').trim()
-      if (reason === '') return { ok: false, note: 'A rollback also requires a reason (it is a change too, and must be auditable).' }
+      if (reason === '') return { ok: false, note: '回滚也要给 reason（回滚同样是一次变更，同样要能审计）。' }
       if (!Number.isInteger(toRevision) || toRevision < 1) {
-        return { ok: false, note: 'rollback requires to_revision (a positive integer, 1-based, indexing the history from memory_rule read).' }
+        return { ok: false, note: 'rollback 需要 to_revision（正整数，从 1 开始，对应 memory_rule read 里 history 的序号）。' }
       }
       const target = nodeOf(state, id)
-      if (target === undefined) return { ok: false, note: `No rule ${id}.` }
-      if (target.kind !== KIND.RULE) return { ok: false, note: `${id} is not a rule (kind=${target.kind}); rule governance only covers kind=rule nodes.` }
+      if (target === undefined) return { ok: false, note: `找不到规矩 ${id}。` }
+      if (target.kind !== KIND.RULE) return { ok: false, note: `${id} 不是规矩（kind=${target.kind}），规矩治理只管 kind=rule 的节点。` }
       const entry = target.history[toRevision - 1]
       if (entry === undefined) {
         return {
           ok: false,
-          note: `Rule ${id} has only ${target.history.length} revision(s); there is no revision ${toRevision}. Use action=read to see the history.`,
+          note: `规矩 ${id} 只有 ${target.history.length} 版，没有第 ${toRevision} 版。先用 action=read 看 history。`,
         }
       }
       if (toRevision === target.revision) {
-        return { ok: false, note: `Rule ${id} is already at revision ${toRevision}; nothing to roll back.` }
+        return { ok: false, note: `规矩 ${id} 现在就是第 ${toRevision} 版，无需回滚。` }
       }
 
       const at = now()
@@ -338,20 +338,20 @@ export function createOperations(lib, opts = {}) {
           seq: state.seq + 1,
           at,
           type: 'rule.amended',
-          data: { id, after: entry.text, reason: `rollback to revision ${toRevision}: ${reason}` },
+          data: { id, after: entry.text, reason: `回滚到第 ${toRevision} 版：${reason}` },
         },
       ])
-      if (!res.ok) return { ok: false, note: `write to disk failed: ${res.reason}` }
+      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
       const after = lib.load()
       const n = nodeOf(after.state, id)
       return {
         ok: true,
         rules: [{ id, text: n.text, revision: n.revision, history: n.history.map((h) => `${new Date(h.at).toISOString()} · ${h.reason}`) }],
-        note: `Rolled back to revision ${toRevision} (now revision ${n.revision}). The rollback is on record too — history was not erased.`,
+        note: `已回滚到第 ${toRevision} 版的内容（现在是第 ${n.revision} 版）。回滚本身也留痕 —— 历史没有被抹掉。`,
       }
     }
 
-    return { ok: false, note: `Unknown action: ${action} (supported: read / amend / rollback).` }
+    return { ok: false, note: `不认识的 action：${action}（支持 read / amend / rollback）。` }
   }
 
   const stats = () => {
@@ -377,8 +377,8 @@ export function createOperations(lib, opts = {}) {
       problems,
       note:
         active.length === 0
-          ? 'The memory store is empty. That is honest in itself — when no real judgment can be written, empty is correct.'
-          : `${active.length} active; ${orphans} still unconnected.`,
+          ? '记忆库是空的。这本身是诚实的 —— 写不出真判断时，就该是空的。'
+          : `活跃 ${active.length} 条；${orphans} 条还没有任何连接。`,
     }
   }
 
@@ -408,20 +408,17 @@ export function buildIndexText(lib, maxEntries) {
   const insights = active.filter((n) => n.kind === KIND.INSIGHT)
 
   const lines = []
-  lines.push('## Your own memory')
-  lines.push('')
-  lines.push('These are judgments you formed earlier, plus the rules you set for yourself.')
-  lines.push('They are **your own positions**, not statements the user made.')
+  lines.push('【你自己的记忆】以下是你此前形成的判断与给自己定的规矩。它们**是你自己的观点**，不是用户说的话。')
 
   if (rules.length > 0) {
     lines.push('')
-    lines.push('### Rules you set for yourself (changing one requires a reason)')
+    lines.push('规矩（你给自己定的，改它要说明理由）：')
     for (const r of rules) lines.push(`- [${r.id}] ${summarize(r.text, 300)}`)
   }
 
   if (judgments.length > 0) {
     lines.push('')
-    lines.push(`### Active judgments (${judgments.length} total${judgments.length > maxEntries ? `, first ${maxEntries} listed` : ''})`)
+    lines.push(`活跃判断（共 ${judgments.length} 条${judgments.length > maxEntries ? `，此处列前 ${maxEntries} 条` : ''}）：`)
     const shown = judgments.slice().sort((a, b) => b.createdAt - a.createdAt).slice(0, maxEntries)
     for (const j of shown) {
       const marks = []
@@ -447,16 +444,14 @@ export function buildIndexText(lib, maxEntries) {
     const budget = Math.max(1, Math.floor(maxEntries / 2))
     const shown = insights.slice().sort((a, b) => b.createdAt - a.createdAt).slice(0, budget)
     lines.push('')
-    lines.push(`### Ideas not yet settled into judgments (${insights.length} total${insights.length > budget ? `, newest ${budget} listed` : ''})`)
+    lines.push(`还没成形到能当判断的想法（共 ${insights.length} 条${insights.length > budget ? `，此处列最新 ${budget} 条` : ''}）：`)
     for (const it of shown) lines.push(`- [${it.id}] ${summarize(it.text, 200)}`)
   }
 
   lines.push('')
   lines.push(
-    'When you form a new judgment, notice two older judgments conflicting, get corrected, or change your mind: ' +
-      'call memory_search first, then memory_write. ' +
-      'Write judgments, not facts — facts can be looked up, only judgments are yours. ' +
-      'If you cannot write a real judgment, do not write one.',
+    '形成新判断、发现两条旧判断矛盾、被纠正、或改了主意时，先 memory_search 再 memory_write。' +
+      '只写判断，不写事实 —— 事实查得到，判断才是你自己的。写不出真判断时就不要写。',
   )
   return lines.join('\n')
 }

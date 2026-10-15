@@ -44,29 +44,29 @@ function inlinedWorkerSource() {
   }
 }
 
-describe('worker · inlined source matches the real source', () => {
-  test('client.js contains the WORKER_SOURCE marked region', () => {
+describe('worker · 内联源码与真源一致', () => {
+  test('client.js 里有 WORKER_SOURCE 标记区', () => {
     const src = readFileSync(CLIENT, 'utf8')
-    assert.ok(src.includes('// >>> WORKER-SOURCE'), 'the opening marker is missing')
-    assert.ok(src.includes('// <<< WORKER-SOURCE <<<'), 'the closing marker is missing')
-    assert.ok(/const WORKER_SOURCE = "/.test(src), 'the WORKER_SOURCE constant is missing')
+    assert.ok(src.includes('// >>> WORKER-SOURCE'), '缺少开始标记')
+    assert.ok(src.includes('// <<< WORKER-SOURCE <<<'), '缺少结束标记')
+    assert.ok(/const WORKER_SOURCE = "/.test(src), '缺少 WORKER_SOURCE 常量')
   })
 
-  test('the inlined source is **byte-identical** to lib/client.graph-worker.js', () => {
+  test('内联的源码**逐字等于** lib/client.graph-worker.js', () => {
     const expected = readFileSync(WORKER, 'utf8')
     const actual = inlinedWorkerSource()
-    assert.ok(actual !== null, 'the inlined source could not be parsed')
+    assert.ok(actual !== null, '解析不出内联源码')
     assert.equal(actual, expected,
-      'the inlined worker does not match the real source — run `node test/inline-worker.mjs` to synchronize')
+      '内联的 worker 与真源不一致 —— 跑 `node test/inline-worker.mjs` 同步')
   })
 
-  test('the inlined value is not an empty string (an empty string means no Worker)', () => {
+  test('内联的不是空串（空串等于没有 Worker）', () => {
     const actual = inlinedWorkerSource()
-    assert.ok(typeof actual === 'string' && actual.length > 1000, `unexpected inlined length: ${actual?.length}`)
+    assert.ok(typeof actual === 'string' && actual.length > 1000, `内联长度异常：${actual?.length}`)
   })
 
-  test('the worker source itself has an onmessage entry (it must still run once inlined)', () => {
+  test('worker 源码本身有 onmessage 入口（内联后仍要能跑）', () => {
     const actual = inlinedWorkerSource()
-    assert.ok(actual.includes('self.onmessage'), 'the worker must have onmessage')
+    assert.ok(actual.includes('self.onmessage'), 'worker 必须有 onmessage')
   })
 })
