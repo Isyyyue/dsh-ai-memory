@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>拖拽验证（直接测渲染器，绕开 React）</title>
+<style>
+  html, body { margin: 0; background: #0d1117; color: #e6edf3; font: 13px/1.5 Consolas, monospace; }
+  #stage { width: 760px; height: 420px; margin-top: 8px; border: 1px solid #30363d; position: relative; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  #out { position: fixed; right: 8px; top: 8px; width: 660px; max-height: 95vh; overflow: auto;
+         background: #161b22; padding: 8px; border-radius: 6px; font-size: 11px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<pre id="out">running…</pre>
+<script>
+  const lines = []
+  const log = (s) => { lines.push(s); document.getElementById('out').textContent = lines.join('\n') }
+
+  window.__ModuleLoader__ = {
+    load({ id, factory }) {
+      try {
+        const React = { createElement: () => null, useRef: () => ({ current: null }), useState: (i) => [i, () => {}], useEffect: () => {}, useMemo: (f) => f() }
+        factory((name) => { if (name === 'react') return React; throw new Error('require ' + name) })
+      } catch (e) { log('❌ factory 抛了: ' + e.message) }
+    },
+  }
+
+  /**
+   * ⚠️ **必须让 Worker 的路径真的存在**，否则测的是"404"而不是拖拽。
+   *
+   * 插件的 `resolveWorkerUrl()` 算出的是 `/plugins/dsh-ai-memory/client.graph-worker.js?rev=...`
+   * （真实 DSH 里的路径）。测试页的服务根目录下没有这个路径，
+   * 于是 Worker 加载失败、`worker = null`、拖拽失效 —— 但那是**测试环境**的问题。
+   *
+   * 这里用一个 Service Worker 式的办法做不到（scope 限制），
+   * 改用**最直接的办法**：把 worker 脚本也放到那个路径下。
+   * 由 `rea-prepare.mjs` 保证 `~/am-test/plugins/dsh-ai-memory/client.graph-worker.js` 存在。
+   */
+  const WORKER_PROBE = { url: null, ok: null, status: null }
+
+  /** 探一下 worker URL 到底通不通（在跑测试前）。 */
+  async function probeWorkerUrl() {
+    // ⚠️ 现在插件用**内联源码的 Blob URL** 建 Worker，不再依赖这个路径。
+    // 这里故意让路径 **404**，以验证"没有网络路径也能拖"。
+    const candidates = ['/plugins/dsh-ai-memory/client.graph-worker.js']
+    for (const c of candidates) {
+      try {
+        const res = await fetch(c, { method: 'GET' })
+        WORKER_PROBE.url = c
+        WORKER_PROBE.ok = res.ok
+        WORKER_PROBE.status = res.status
+      } catch (e) {
+        WORKER_PROBE.url = c
+        WORKER_PROBE.ok = false
+        WORKER_PROBE.status = String(e.message)
+      }
+    }
+  }
+
+  window.addEventListener('load', async () => {
+    await probeWorkerUrl()
+    const s = document.createElement('script')
+    s.src = 'client.js?rev=' + Date.now()
+    s.onerror = () => log('❌ client.js 加载失败')
+    s.onload = () => setTimeout(runTest, 300)
+    document.head.appendChild(s)
+  })
+
+  /** 把世界坐标转成屏幕坐标（与渲染器的变换互逆）。 */
+  function toScreen(r, wx, wy) {
+    const rect = r.canvas.getBoundingClientRect()
+    return {
+      x: rect.left + rect.width / 2 + r.tx + wx * r.scale,
+      y: rect.top + rect.height / 2 + r.ty + wy * r.scale,
+    }
+  }
+
+  function runTest() {
+    const R = window.__GraphRenderer
+    if (typeof R !== 'function') { log('❌ 没拿到 GraphRenderer'); report(false); return }
+
+    const canvas = document.getElementById('cv')
+    const renderer = new R(canvas, { onSelect: () => {} })
+
+    const nodes = [
+      { id: 'a', label: '判断 A', kind: 'judgment', status: 'active', degree: 1 },
+      { id: 'b', label: '思考 B', kind: 'insight', status: 'active', degree: 1 },
+    ]
+    const edges = [{ from: 'a', to: 'b', type: 'complements' }]
+    renderer.setData(nodes, edges)
+
+    setTimeout(() => {
+      const results = []
+      const check = (name, ok, detail) => { results.push({ name, ok }); log((ok ? '  ✓ ' : '  ✗ ') + name + (detail ? ' — ' + detail : '')) }
+
+      log('=== 拖拽链路 ===')
+      log('worker      : ' + (renderer.worker === null ? 'null（降级）' : 'ok'))
+      log('workerError : ' + (renderer.workerError ?? '(无)'))
+      log('worker URL  : ' + WORKER_PROBE.url + '  HTTP=' + WORKER_PROBE.status)
+      log('positions   : ' + renderer.positions.size)
+      log('autoFit     : ' + renderer.autoFit)
+      log('scale/tx/ty : ' + renderer.scale.toFixed(3) + ' / ' + renderer.tx.toFixed(1) + ' / ' + renderer.ty.toFixed(1))
+
+      // ① hitTest 能不能命中（用节点的世界坐标反推屏幕坐标）
+      const pa = renderer.positions.get('a')
+      const sa = toScreen(renderer, pa.x, pa.y)
+      const hit = renderer.hitTest(sa.x, sa.y)
+      check('hitTest 能命中节点 a', hit === 'a', '命中 ' + String(hit))
+
+      // ② 派发 pointerdown + pointermove，看节点有没有被钉住
+      const before = { x: pa.x, y: pa.y }
+      const fire = (type, cx, cy) => canvas.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, clientX: cx, clientY: cy,
+      }))
+
+      fire('pointerdown', sa.x, sa.y)
+      check('pointerdown 之后 dragNodeId 被设置', renderer.dragNodeId === 'a', 'dragNodeId=' + String(renderer.dragNodeId))
+
+      // 拖到另一个位置
+      const target = toScreen(renderer, pa.x + 120, pa.y + 60)
+      fire('pointermove', target.x, target.y)
+      check('pointermove 标记了 dragMoved', renderer.dragMoved === true)
+
+      // 等物理跑几帧，看节点有没有跟着走
+      setTimeout(() => {
+        const after = renderer.positions.get('a')
+        const moved = Math.hypot(after.x - before.x, after.y - before.y)
+        check('节点跟着指针移动了', moved > 20, '移动了 ' + moved.toFixed(1) + 'px')
+
+        fire('pointerup', target.x, target.y)
+        check('pointerup 清掉 dragNodeId', renderer.dragNodeId === null)
+
+        const failed = results.filter((r) => !r.ok)
+        log('')
+        log('VERDICT ' + JSON.stringify({ worker: renderer.worker !== null, moved: Math.round(moved), failed: failed.map((f) => f.name) }) + ' ok=' + (failed.length === 0))
+        report(failed.length === 0)
+      }, 700)
+    }, 1200)
+  }
+
+  function report(ok) {
+    const el = document.createElement('div')
+    el.id = 'verdict'
+    el.style.cssText = 'position:fixed;left:8px;top:8px;z-index:999;background:#000;color:#0f0;font:700 18px Consolas,monospace;padding:8px'
+    el.textContent = 'VERDICT ok=' + ok
+    document.body.appendChild(el)
+    document.title = 'AMRESULT ' + (ok ? 'ALL_PASS' : 'FAIL')
+  }
+</script>
+</body>
+</html>

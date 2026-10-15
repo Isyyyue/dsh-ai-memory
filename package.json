@@ -1,0 +1,92 @@
+{
+  "name": "dsh-ai-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "给 DSH 里的 AI 一层自己的判断记忆：判断节点 + 确定性取代（supersede）+ 双时态账本 + 双链，规则与人格分开治理，图谱作可解释性界面。",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/",
+    "lib/",
+    "test/",
+    "cordis.patch.yml",
+    "README.md",
+    "MAINTAINING.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:e2e": "node test/e2e.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    },
+    "requires": {
+      "tested": "0.1.7-rc.2",
+      "checks": [
+        {
+          "kind": "profileDep"
+        },
+        {
+          "kind": "clientBundle"
+        },
+        {
+          "kind": "patchRow"
+        },
+        {
+          "kind": "http",
+          "path": "/plugins/dsh-ai-memory/stats",
+          "expect": 200
+        },
+        {
+          "kind": "httpFields",
+          "path": "/plugins/dsh-ai-memory/stats",
+          "keys": [
+            "ok",
+            "stats",
+            "problems"
+          ]
+        },
+        {
+          "kind": "http",
+          "path": "/plugins/dsh-ai-memory/snapshot",
+          "expect": 200
+        },
+        {
+          "kind": "httpFields",
+          "path": "/plugins/dsh-ai-memory/snapshot",
+          "keys": [
+            "ok",
+            "nodes",
+            "edges",
+            "stats",
+            "truncated"
+          ]
+        }
+      ]
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "memory",
+    "supersede",
+    "knowledge-graph"
+  ],
+  "license": "MIT"
+}
