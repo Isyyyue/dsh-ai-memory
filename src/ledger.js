@@ -24,6 +24,10 @@
  *   edge.linked       bidirectional link created
  *   edge.unlinked     bidirectional link removed
  *   rule.amended      rule change (governed: carries a reason, rollback-able)
+ *   persona.proposed  a candidate personality trait is observed
+ *   persona.accepted  a candidate is confirmed as part of the personality
+ *   persona.rejected  a candidate is explicitly declined
+ *   persona.revised   a confirmed trait is refined with a reason
  */
 
 /** Event types the ledger recognizes. Unknown types are recorded as a problem, never silently swallowed. */
@@ -35,6 +39,10 @@ export const EVENT_TYPES = Object.freeze([
   'edge.linked',
   'edge.unlinked',
   'rule.amended',
+  'persona.proposed',
+  'persona.accepted',
+  'persona.rejected',
+  'persona.revised',
 ])
 
 /** Node status. Only active nodes take part in search and injection. */
@@ -63,6 +71,7 @@ export const KIND = Object.freeze({
   JUDGMENT: 'judgment',
   RULE: 'rule',
   INSIGHT: 'insight',
+  PERSONA: 'persona',
 })
 
 /**
@@ -74,6 +83,7 @@ export function createState() {
     seq: 0,
     nodes: new Map(),
     edges: [],
+    persona: new Map(),
     problems: [],
   }
 }
@@ -232,6 +242,53 @@ export function applyEvent(state, ev) {
         reason: typeof d.reason === 'string' ? d.reason : '规则变更',
         amendment: true,
       })
+      break
+    }
+
+    case 'persona.proposed': {
+      const id = typeof d.id === 'string' && d.id !== '' ? d.id : `p_${String(ev.seq ?? 0).padStart(4, '0')}`
+      if (state.persona.has(id)) {
+        state.problems.push({ at: 'fold', reason: `人格候选 id 重复：${id}`, seq: ev.seq })
+        break
+      }
+      const confidence = Number(d.confidence)
+      state.persona.set(id, {
+        id,
+        text: typeof d.text === 'string' ? d.text : '',
+        status: 'candidate',
+        confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.5,
+        evidence: Array.isArray(d.evidence) ? d.evidence.filter((x) => typeof x === 'string') : [],
+        createdAt: at,
+        updatedAt: at,
+        history: [{ at, action: 'proposed', text: typeof d.text === 'string' ? d.text : '', reason: typeof d.reason === 'string' ? d.reason : '' }],
+      })
+      break
+    }
+
+    case 'persona.accepted':
+    case 'persona.rejected': {
+      const p = state.persona.get(d.id)
+      if (p === undefined) {
+        state.problems.push({ at: 'fold', reason: `人格操作指向不存在的候选：${String(d.id)}`, seq: ev.seq })
+        break
+      }
+      p.status = ev.type === 'persona.accepted' ? 'active' : 'rejected'
+      p.updatedAt = at
+      p.history.push({ at, action: ev.type === 'persona.accepted' ? 'accepted' : 'rejected', text: p.text, reason: typeof d.reason === 'string' ? d.reason : '' })
+      break
+    }
+
+    case 'persona.revised': {
+      const p = state.persona.get(d.id)
+      if (p === undefined) {
+        state.problems.push({ at: 'fold', reason: `人格修订指向不存在的特征：${String(d.id)}`, seq: ev.seq })
+        break
+      }
+      const before = p.text
+      p.text = typeof d.after === 'string' ? d.after : p.text
+      if (Number.isFinite(Number(d.confidence))) p.confidence = Math.max(0, Math.min(1, Number(d.confidence)))
+      p.updatedAt = at
+      p.history.push({ at, action: 'revised', text: p.text, before, reason: typeof d.reason === 'string' ? d.reason : '' })
       break
     }
 

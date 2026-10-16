@@ -91,13 +91,14 @@ function fakeCtx(opts = {}) {
 }
 
 describe('apply() · 工具真的注册了（防静默失效）', () => {
-  test('六个工具全部注册，名字正确', () => {
+  test('七个工具全部注册，名字正确', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a1') })
     const names = rec.tools.map((t) => t.name).sort()
     assert.deepEqual(names, [
       'memory_connect',
       'memory_history',
+      'memory_persona',
       'memory_rule',
       'memory_search',
       'memory_stats',
@@ -157,7 +158,7 @@ describe('apply() · 工具真的注册了（防静默失效）', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a6'), injectIndex: false })
     assert.equal(rec.sections.length, 0)
-    assert.equal(rec.tools.length, 6, '关注入不该影响工具')
+    assert.equal(rec.tools.length, 7, '关注入不该影响工具')
   })
 
   test('enabled: false 时什么都不注册', () => {
@@ -172,7 +173,7 @@ describe('apply() · webServer 是局部可选依赖（关键）', () => {
   test('没有 webServer 时，工具**照样**注册（不该整条不激活）', () => {
     const { ctx, rec } = fakeCtx({ withWebServer: false })
     apply(ctx, { dir: join(work, 'b1') })
-    assert.equal(rec.tools.length, 6, '缺 webServer 不能让工具消失')
+    assert.equal(rec.tools.length, 7, '缺 webServer 不能让工具消失')
     assert.equal(rec.sections.length, 1)
     assert.equal(rec.routes.length, 0)
   })
