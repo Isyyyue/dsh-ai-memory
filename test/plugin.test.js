@@ -263,8 +263,7 @@ describe('operations · persona growth', () => {
     assert.equal(p.ok, true)
     assert.equal(ops.persona({ action: 'read' }).active.length, 0)
     assert.equal(ops.persona({ action: 'read' }).candidates.length, 1)
-    assert.match(buildIndexText(l, 40), /待确认的人格候选/)
-    assert.doesNotMatch(buildIndexText(l, 40), /已确认的人格/)
+    assert.equal(buildIndexText(l, 40), '', '未确认候选不应进入普通会话注入')
   })
 
   test('accept, revise and reject are all recorded in the trait history', () => {

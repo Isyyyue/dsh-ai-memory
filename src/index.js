@@ -502,7 +502,7 @@ export function createOperations(lib, opts = {}) {
 export function buildIndexText(lib, maxEntries) {
   const { state } = lib.load()
   const active = activeNodes(state)
-  const hasPersona = [...state.persona.values()].some((p) => p.status === 'active' || p.status === 'candidate')
+  const hasPersona = [...state.persona.values()].some((p) => p.status === 'active')
   if (active.length === 0 && !hasPersona) return ''
 
   const rules = active.filter((n) => n.kind === KIND.RULE)
@@ -510,7 +510,6 @@ export function buildIndexText(lib, maxEntries) {
   const insights = active.filter((n) => n.kind === KIND.INSIGHT)
   const persona = [...state.persona.values()]
   const activePersona = persona.filter((p) => p.status === 'active')
-  const candidates = persona.filter((p) => p.status === 'candidate')
 
   const lines = []
   lines.push('【你自己的记忆】以下是你此前形成的判断与给自己定的规矩。它们**是你自己的观点**，不是用户说的话。')
@@ -559,11 +558,6 @@ export function buildIndexText(lib, maxEntries) {
     for (const p of activePersona.slice(0, Math.max(1, Math.floor(maxEntries / 2)))) lines.push(`- [${p.id}] ${summarize(p.text, 240)}`)
   }
 
-  if (candidates.length > 0) {
-    lines.push('')
-    lines.push('待确认的人格候选（只能作为尝试，不能当成稳定身份）：')
-    for (const p of candidates.slice(0, Math.max(1, Math.floor(maxEntries / 4)))) lines.push(`- [${p.id}] ${summarize(p.text, 180)}`)
-  }
 
   lines.push('')
   lines.push(

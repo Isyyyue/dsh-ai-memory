@@ -21,10 +21,9 @@
   "files": [
     "src/",
     "lib/",
-    "test/",
     "cordis.patch.yml",
     "README.md",
-    "MAINTAINING.md"
+    "LICENSE"
   ],
   "engines": {
     "node": ">=22"
