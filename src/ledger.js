@@ -258,6 +258,7 @@ export function applyEvent(state, ev) {
         status: 'candidate',
         confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.5,
         evidence: Array.isArray(d.evidence) ? d.evidence.filter((x) => typeof x === 'string') : [],
+        sourceIds: Array.isArray(d.sourceIds) ? d.sourceIds.filter((x) => typeof x === 'string') : [],
         createdAt: at,
         updatedAt: at,
         history: [{ at, action: 'proposed', text: typeof d.text === 'string' ? d.text : '', reason: typeof d.reason === 'string' ? d.reason : '' }],

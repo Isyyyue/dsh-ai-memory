@@ -149,7 +149,17 @@ export function createOperations(lib, opts = {}) {
 
   const search = (args) => {
     const { state } = lib.load()
-    const pool = args?.include_retired === true ? [...state.nodes.values()] : activeNodes(state)
+    const personaNodes = [...state.persona.values()]
+      .filter((p) => args?.include_retired === true ? true : p.status !== 'rejected')
+      .map((p) => ({
+        id: p.id,
+        text: p.text,
+        status: p.status,
+        kind: KIND.PERSONA,
+        score: 0,
+        supersededBy: null,
+      }))
+    const pool = (args?.include_retired === true ? [...state.nodes.values()] : activeNodes(state)).concat(personaNodes)
     const r = searchNodes(pool, String(args?.query ?? ''), { limit: args?.limit })
     return {
       total: r.total,
@@ -371,6 +381,7 @@ export function createOperations(lib, opts = {}) {
         status: p.status,
         confidence: p.confidence,
         evidence: p.evidence,
+        source_ids: p.sourceIds,
         history: p.history.map((h) => ({ at: h.at, action: h.action, text: h.text, reason: h.reason })),
       }))
 
@@ -384,8 +395,11 @@ export function createOperations(lib, opts = {}) {
       if (text === '') return { ok: false, note: '人格候选不能为空。' }
       const id = makeNodeId(now(), state.seq + 1).replace(/^n_/, 'p_')
       const evidence = Array.isArray(args?.evidence) ? args.evidence : []
+      const sourceIds = Array.isArray(args?.source_ids) ? args.source_ids.filter((x) => typeof x === 'string' && x !== '') : []
+      const missing = sourceIds.filter((sourceId) => !state.nodes.has(sourceId))
+      if (missing.length > 0) return { ok: false, note: `人格候选引用了不存在的记忆：${missing.join(', ')}` }
       const confidence = Number.isFinite(Number(args?.confidence)) ? Number(args.confidence) : 0.5
-      const res = lib.commit([{ seq: state.seq + 1, at: now(), type: 'persona.proposed', data: { id, text, evidence, confidence, reason } }])
+      const res = lib.commit([{ seq: state.seq + 1, at: now(), type: 'persona.proposed', data: { id, text, evidence, sourceIds, confidence, reason } }])
       if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
       return { ok: true, action: 'proposed', id, status: 'candidate', note: '人格候选已记录，等待用户确认；它暂时不会成为稳定人格。' }
     }
@@ -396,12 +410,15 @@ export function createOperations(lib, opts = {}) {
     if (reason === '') return { ok: false, note: `${action} 必须给 reason，确保人格变化可审计。` }
 
     if (action === 'accept' || action === 'reject') {
+      if (action === 'accept' && current.status !== 'candidate') return { ok: false, note: `只有 candidate 才能确认，当前状态是 ${current.status}。` }
+      if (action === 'reject' && current.status !== 'candidate') return { ok: false, note: `只有 candidate 才能拒绝，当前状态是 ${current.status}。` }
       const res = lib.commit([{ seq: state.seq + 1, at: now(), type: action === 'accept' ? 'persona.accepted' : 'persona.rejected', data: { id, reason } }])
       if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
       return { ok: true, action, id, status: action === 'accept' ? 'active' : 'rejected', note: action === 'accept' ? '人格特征已确认，会进入后续会话注入。' : '人格候选已拒绝，不会进入人格注入。' }
     }
 
     if (action === 'revise') {
+      if (current.status !== 'active') return { ok: false, note: `只有已确认的人格才能修订，当前状态是 ${current.status}。` }
       const text = String(args?.text ?? '').trim()
       if (text === '') return { ok: false, note: '修订后的人格特征不能为空。' }
       const confidence = Number.isFinite(Number(args?.confidence)) ? Number(args.confidence) : current.confidence
@@ -411,6 +428,27 @@ export function createOperations(lib, opts = {}) {
     }
 
     return { ok: false, note: `不认识的 action：${action}（支持 read / propose / accept / reject / revise）。` }
+  }
+
+  const reflect = (args) => {
+    const { state } = lib.load()
+    const limitRaw = Number(args?.limit)
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 20) : 8
+    const memories = activeNodes(state)
+      .slice()
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit)
+      .map((n) => ({ id: n.id, kind: n.kind, text: summarize(n.text, 240), tags: n.tags }))
+    const traits = [...state.persona.values()]
+      .filter((p) => p.status === 'active' || p.status === 'candidate')
+      .map((p) => ({ id: p.id, text: p.text, status: p.status, confidence: p.confidence, source_ids: p.sourceIds }))
+    return {
+      ok: true,
+      memories,
+      persona: traits,
+      instruction: '回顾这些属于你的记忆，寻找稳定但尚未记录的表达倾向；如果发现候选人格，请用 memory_persona propose，并填写 source_ids。不要把一次性的用户要求直接当成人格。',
+      note: `已准备 ${memories.length} 条近期记忆和 ${traits.length} 条人格特征供自我反思。`,
+    }
   }
 
   const stats = () => {
@@ -445,7 +483,7 @@ export function createOperations(lib, opts = {}) {
     }
   }
 
-  return { search, write, connect, history, rule, persona, stats }
+  return { search, write, connect, history, rule, persona, reflect, stats }
 }
 
 /**

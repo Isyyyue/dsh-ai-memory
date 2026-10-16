@@ -290,6 +290,31 @@ describe('operations · persona growth', () => {
     const p = ops.persona({ action: 'propose', text: '会观察用户喜欢的词语' })
     assert.equal(ops.persona({ action: 'accept', id: p.id }).ok, false)
   })
+
+  test('personality candidates can cite concrete memories and appear in search', () => {
+    const l = openLibrary(join(work, 'persona4'))
+    const ops = createOperations(l, { now: clock() })
+    const memory = ops.write({ text: '我喜欢自然地使用鱼类拟声词' })
+    const p = ops.persona({ action: 'propose', text: '会自然使用鱼类拟声词', source_ids: [memory.node_id] })
+    assert.equal(p.ok, true)
+    const found = ops.search({ query: '拟声词' })
+    assert.ok(found.results.some((r) => r.id === p.id && r.kind === 'persona'))
+    assert.deepEqual(ops.persona({ action: 'read' }).candidates[0].source_ids, [memory.node_id])
+    const reflection = ops.reflect({ limit: 5 })
+    assert.equal(reflection.ok, true)
+    assert.ok(reflection.memories.some((m) => m.id === memory.node_id))
+    assert.match(reflection.instruction, /source_ids/)
+  })
+
+  test('invalid personality state transitions are refused', () => {
+    const l = openLibrary(join(work, 'persona5'))
+    const ops = createOperations(l, { now: clock() })
+    const p = ops.persona({ action: 'propose', text: '候选特征' })
+    assert.equal(ops.persona({ action: 'accept', id: p.id, reason: '确认' }).status, 'active')
+    assert.equal(ops.persona({ action: 'accept', id: p.id, reason: '重复确认' }).ok, false)
+    assert.equal(ops.persona({ action: 'reject', id: p.id, reason: '拒绝已确认特征' }).ok, false)
+    assert.equal(ops.persona({ action: 'revise', id: p.id, text: '修订后的特征', reason: '反馈' }).ok, true)
+  })
 })
 
 describe('operations · stats', () => {
