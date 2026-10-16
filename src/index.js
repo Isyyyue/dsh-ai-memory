@@ -38,7 +38,7 @@ export const name = 'dsh-ai-memory'
 /**
  * Services this plugin **requires**, declared truthfully.
  *
- * `tools`        — registers the six memory tools (the core value; without it
+ * `tools`        — registers the eight memory tools (the core value; without it
  *                  the plugin is pointless)
  * `systemPrompt` — injects the judgment index at session start (the "read" half)
  *
@@ -192,7 +192,7 @@ export function createOperations(lib, opts = {}) {
         subject: args?.subject,
         relation: args?.relation,
         object: args?.object,
-        // Three kinds: judgment (default) / rule (governed) / insight (not superseded).
+        // Three node kinds: judgment (default) / rule (governed) / insight (not superseded).
         kind: args?.kind === KIND.RULE ? KIND.RULE
           : args?.kind === KIND.INSIGHT ? KIND.INSIGHT
             : KIND.JUDGMENT,
