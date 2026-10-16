@@ -395,6 +395,9 @@ describe('index text · injected at session start', () => {
     assert.match(text, /还没有任何连接/)
     assert.match(text, /本轮结束前/)
     assert.match(text, /删掉这条，你下次的行为会变吗/)
+    assert.match(text, /工具、文档或流程有错/)
+    assert.match(text, /发现事实有误与记录一条事实是两回事/)
+    assert.match(text, /不为完成要求编造结论/)
   })
 
   test('**insights are injected too** — otherwise writing one is pointless', () => {

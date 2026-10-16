@@ -111,19 +111,11 @@ try {
   check('nodes carry a degree', snap.nodes.every((n) => typeof n.degree === 'number'))
   check('nodes carry no full text (a label only)', snap.nodes.every((n) => n.text === undefined))
   const withRetired = buildSnapshot(lib.load().state, { includeRetired: true })
-  // ⚠️ This once asserted `withRetired.nodes.length > snap.nodes.length` (the default
-  // excluded retired nodes). That design turned the default view into a blank
-  // "N nodes · 0 links" graph, because every supersedes edge points at a retired node:
-  // filtering them out filtered out all the edges, and seeing provenance is the whole
-  // point of this plugin. The default view now **carries the entire supersession chain
-  // as provenance**, so the two counts may be equal (when there is no orphaned retired
-  // node).
-  check('the default view keeps the supersession chain (edges are not empty)', snap.edges.length > 0, `edges=${snap.edges.length}`)
-  check('includeRetired is a superset', withRetired.nodes.length >= snap.nodes.length, `${snap.nodes.length} → ${withRetired.nodes.length}`)
-  check('every retired node in the default view is provenance', (() => {
-    const chainTargets = new Set(snap.edges.filter((e) => e.type === 'supersedes').map((e) => e.to))
-    return snap.nodes.filter((n) => n.status !== 'active').every((n) => chainTargets.has(n.id))
-  })(), 'unrelated retired nodes must not be dragged in')
+  // Supersession edges require a retired endpoint, so they belong only in
+  // the history view. Active-to-active semantic links may still be visible.
+  check('默认视图只包含活跃节点', snap.nodes.every((n) => n.status === 'active'))
+  check('历史视图包含退役节点', withRetired.nodes.length > snap.nodes.length, `${snap.nodes.length} → ${withRetired.nodes.length}`)
+  check('取代关系只出现在历史视图', !snap.edges.some((e) => e.type === 'supersedes') && withRetired.edges.some((e) => e.type === 'supersedes'))
 
   console.log('\n[10] Stats and injection')
   const st = ops.stats()
