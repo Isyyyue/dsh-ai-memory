@@ -142,7 +142,7 @@ export function openLibrary(dir) {
  *
  * @param {object} lib - product of openLibrary().
  * @param {{now?: () => number}} [opts] - injectable clock (for tests).
- * @returns {object} the six operations.
+ * @returns {object} the memory operations.
  */
 export function createOperations(lib, opts = {}) {
   const now = opts.now ?? (() => Date.now())
@@ -354,6 +354,65 @@ export function createOperations(lib, opts = {}) {
     return { ok: false, note: `不认识的 action：${action}（支持 read / amend / rollback）。` }
   }
 
+  /**
+   * Personality growth is deliberately two-phase: the model may propose an
+   * observation, but only explicit feedback can make it part of the stable
+   * personality injected into future sessions.
+   */
+  const persona = (args) => {
+    const action = String(args?.action ?? 'read')
+    const { state } = lib.load()
+    const list = (statuses) => [...state.persona.values()]
+      .filter((p) => statuses.includes(p.status))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((p) => ({
+        id: p.id,
+        text: p.text,
+        status: p.status,
+        confidence: p.confidence,
+        evidence: p.evidence,
+        history: p.history.map((h) => ({ at: h.at, action: h.action, text: h.text, reason: h.reason })),
+      }))
+
+    if (action === 'read') {
+      return { ok: true, active: list(['active']), candidates: list(['candidate']), rejected: list(['rejected']), note: '人格特征分为已确认、待确认和已拒绝；只有已确认特征会成为稳定人格。' }
+    }
+
+    const reason = String(args?.reason ?? '').trim()
+    if (action === 'propose') {
+      const text = String(args?.text ?? '').trim()
+      if (text === '') return { ok: false, note: '人格候选不能为空。' }
+      const id = makeNodeId(now(), state.seq + 1).replace(/^n_/, 'p_')
+      const evidence = Array.isArray(args?.evidence) ? args.evidence : []
+      const confidence = Number.isFinite(Number(args?.confidence)) ? Number(args.confidence) : 0.5
+      const res = lib.commit([{ seq: state.seq + 1, at: now(), type: 'persona.proposed', data: { id, text, evidence, confidence, reason } }])
+      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
+      return { ok: true, action: 'proposed', id, status: 'candidate', note: '人格候选已记录，等待用户确认；它暂时不会成为稳定人格。' }
+    }
+
+    const id = String(args?.id ?? '')
+    const current = state.persona.get(id)
+    if (current === undefined) return { ok: false, note: `找不到人格特征 ${id}。先用 action=read 查看。` }
+    if (reason === '') return { ok: false, note: `${action} 必须给 reason，确保人格变化可审计。` }
+
+    if (action === 'accept' || action === 'reject') {
+      const res = lib.commit([{ seq: state.seq + 1, at: now(), type: action === 'accept' ? 'persona.accepted' : 'persona.rejected', data: { id, reason } }])
+      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
+      return { ok: true, action, id, status: action === 'accept' ? 'active' : 'rejected', note: action === 'accept' ? '人格特征已确认，会进入后续会话注入。' : '人格候选已拒绝，不会进入人格注入。' }
+    }
+
+    if (action === 'revise') {
+      const text = String(args?.text ?? '').trim()
+      if (text === '') return { ok: false, note: '修订后的人格特征不能为空。' }
+      const confidence = Number.isFinite(Number(args?.confidence)) ? Number(args.confidence) : current.confidence
+      const res = lib.commit([{ seq: state.seq + 1, at: now(), type: 'persona.revised', data: { id, after: text, confidence, reason } }])
+      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
+      return { ok: true, action: 'revised', id, status: current.status, note: '人格特征已修订，修订理由已留痕。' }
+    }
+
+    return { ok: false, note: `不认识的 action：${action}（支持 read / propose / accept / reject / revise）。` }
+  }
+
   const stats = () => {
     const { state, problems } = lib.load()
     const all = [...state.nodes.values()]
@@ -367,10 +426,14 @@ export function createOperations(lib, opts = {}) {
     }
     const orphans = active.filter((n) => !connected.has(n.id)).length
     const insights = all.filter((n) => n.kind === KIND.INSIGHT)
+    const persona = [...state.persona.values()]
     return {
       judgments: judgments.filter((n) => n.status === STATUS.ACTIVE).length,
       rules: rules.filter((n) => n.status === STATUS.ACTIVE).length,
       insights: insights.filter((n) => n.status === STATUS.ACTIVE).length,
+      persona: persona.filter((p) => p.status === 'active').length,
+      persona_candidates: persona.filter((p) => p.status === 'candidate').length,
+      persona_rejected: persona.filter((p) => p.status === 'rejected').length,
       retired: all.filter((n) => n.status !== STATUS.ACTIVE).length,
       edges: state.edges.length,
       orphans,
@@ -382,7 +445,7 @@ export function createOperations(lib, opts = {}) {
     }
   }
 
-  return { search, write, connect, history, rule, stats }
+  return { search, write, connect, history, rule, persona, stats }
 }
 
 /**
@@ -401,11 +464,15 @@ export function createOperations(lib, opts = {}) {
 export function buildIndexText(lib, maxEntries) {
   const { state } = lib.load()
   const active = activeNodes(state)
-  if (active.length === 0) return ''
+  const hasPersona = [...state.persona.values()].some((p) => p.status === 'active' || p.status === 'candidate')
+  if (active.length === 0 && !hasPersona) return ''
 
   const rules = active.filter((n) => n.kind === KIND.RULE)
   const judgments = active.filter((n) => n.kind === KIND.JUDGMENT)
   const insights = active.filter((n) => n.kind === KIND.INSIGHT)
+  const persona = [...state.persona.values()]
+  const activePersona = persona.filter((p) => p.status === 'active')
+  const candidates = persona.filter((p) => p.status === 'candidate')
 
   const lines = []
   lines.push('【你自己的记忆】以下是你此前形成的判断与给自己定的规矩。它们**是你自己的观点**，不是用户说的话。')
@@ -446,6 +513,18 @@ export function buildIndexText(lib, maxEntries) {
     lines.push('')
     lines.push(`还没成形到能当判断的想法（共 ${insights.length} 条${insights.length > budget ? `，此处列最新 ${budget} 条` : ''}）：`)
     for (const it of shown) lines.push(`- [${it.id}] ${summarize(it.text, 200)}`)
+  }
+
+  if (activePersona.length > 0) {
+    lines.push('')
+    lines.push('已确认的人格（这是你逐渐形成的表达倾向，不是用户临时指令）：')
+    for (const p of activePersona.slice(0, Math.max(1, Math.floor(maxEntries / 2)))) lines.push(`- [${p.id}] ${summarize(p.text, 240)}`)
+  }
+
+  if (candidates.length > 0) {
+    lines.push('')
+    lines.push('待确认的人格候选（只能作为尝试，不能当成稳定身份）：')
+    for (const p of candidates.slice(0, Math.max(1, Math.floor(maxEntries / 4)))) lines.push(`- [${p.id}] ${summarize(p.text, 180)}`)
   }
 
   lines.push('')

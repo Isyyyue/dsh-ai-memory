@@ -255,14 +255,49 @@ export function buildTools(deps) {
     }),
 
     tool({
+      name: 'memory_persona',
+      description:
+        '管理正在形成的人格。用 propose 记录从互动中观察到的表达倾向或角色特征；' +
+        '只有用户明确反馈后才用 accept 纳入稳定人格，reject 丢弃候选，revise 修订已确认特征。' +
+        '候选与确认、拒绝、修订都有历史，防止一次指令把人格无审计地改掉。',
+      parameters: {
+        action: strReq('read / propose / accept / reject / revise'),
+        id: str('accept、reject、revise 时的人格特征 id'),
+        text: str('propose 或 revise 时的人格特征描述'),
+        evidence: strArray('propose 时的观察依据或会话线索'),
+        confidence: { type: 'number', description: '0 到 1 的初始/修订置信度，默认 0.5' },
+        reason: str('accept、reject、revise 时必填；说明反馈或改变原因'),
+      },
+      schema: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          action: str('read / proposed / accept / reject / revised'),
+          id: str('人格特征 id'),
+          status: str('active / candidate / rejected'),
+          active: { type: 'array', items: { type: 'object' } },
+          candidates: { type: 'array', items: { type: 'object' } },
+          rejected: { type: 'array', items: { type: 'object' } },
+          note: str('结果说明'),
+        },
+        required: ['ok', 'note'],
+      },
+      execute: (args) => deps.persona(args),
+    }),
+
+    tool({
       name: 'memory_stats',
-      description: '记忆库体检：判断数、规矩数、被取代数、双链数、孤立判断、数据问题。只读，不改任何东西。',
+      description: '记忆库体检：判断、规矩、人格特征、被取代数、双链数、孤立判断、数据问题。只读，不改任何东西。',
       parameters: {},
       schema: {
         type: 'object',
         properties: {
           judgments: { type: 'integer' },
           rules: { type: 'integer' },
+          insights: { type: 'integer' },
+          persona: { type: 'integer', description: '已确认人格特征数' },
+          persona_candidates: { type: 'integer', description: '待确认人格候选数' },
+          persona_rejected: { type: 'integer', description: '已拒绝人格候选数' },
           retired: { type: 'integer' },
           edges: { type: 'integer' },
           orphans: { type: 'integer', description: '一条链都没有的判断数' },

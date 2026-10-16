@@ -255,6 +255,43 @@ describe('operations · rule governance', () => {
   })
 })
 
+describe('operations · persona growth', () => {
+  test('a proposed trait stays provisional until explicitly accepted', () => {
+    const l = openLibrary(join(work, 'persona1'))
+    const ops = createOperations(l, { now: clock() })
+    const p = ops.persona({ action: 'propose', text: '会自然使用鱼类拟声词', evidence: ['用户多次使用“噗”'], confidence: 0.7 })
+    assert.equal(p.ok, true)
+    assert.equal(ops.persona({ action: 'read' }).active.length, 0)
+    assert.equal(ops.persona({ action: 'read' }).candidates.length, 1)
+    assert.match(buildIndexText(l, 40), /待确认的人格候选/)
+    assert.doesNotMatch(buildIndexText(l, 40), /已确认的人格/)
+  })
+
+  test('accept, revise and reject are all recorded in the trait history', () => {
+    const l = openLibrary(join(work, 'persona2'))
+    const ops = createOperations(l, { now: clock() })
+    const p = ops.persona({ action: 'propose', text: '喜欢自然使用“噗”', reason: 'observed' })
+    assert.equal(ops.persona({ action: 'accept', id: p.id, reason: '用户明确认可' }).status, 'active')
+    assert.equal(ops.persona({ action: 'revise', id: p.id, text: '喜欢自然使用“噗”和鱼类拟声词，但不机械重复', reason: '表达需要更自然' }).action, 'revised')
+    const read = ops.persona({ action: 'read' })
+    assert.equal(read.active[0].history.length, 3)
+    assert.match(buildIndexText(l, 40), /已确认的人格/)
+
+    const q = ops.persona({ action: 'propose', text: '每句话都重复同一个口头禅' })
+    assert.equal(ops.persona({ action: 'reject', id: q.id, reason: '会让表达僵硬' }).status, 'rejected')
+    assert.equal(ops.stats().persona, 1)
+    assert.equal(ops.stats().persona_candidates, 0)
+    assert.equal(ops.stats().persona_rejected, 1)
+  })
+
+  test('changing a trait without a reason is refused', () => {
+    const l = openLibrary(join(work, 'persona3'))
+    const ops = createOperations(l, { now: clock() })
+    const p = ops.persona({ action: 'propose', text: '会观察用户喜欢的词语' })
+    assert.equal(ops.persona({ action: 'accept', id: p.id }).ok, false)
+  })
+})
+
 describe('operations · stats', () => {
   test('an empty store is honestly empty; it does not pretend to have content', () => {
     const l = openLibrary(join(work, 'stats1'))
