@@ -151,7 +151,7 @@ plugin_manager action=remove_bundle target=dsh-ai-memory
 | `maxGraphNodes` | `500` | 图谱快照节点上限 |
 | `enabled` | `true` | 是否注册插件 |
 
-注入内容是摘要，不是整本账本。已确认的人格会单独列出；待确认的人格候选会明确标记为候选，不会被伪装成稳定身份。
+注入内容是摘要，不是整本账本。已确认的人格会单独列出；待确认的人格候选不会进入普通会话注入，只在 `memory_persona read` 和 `memory_reflect` 中出现，避免一次偶然观察被反复强化。
 
 ## 开发与验证
 
