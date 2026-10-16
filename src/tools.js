@@ -80,7 +80,7 @@ const strReq = (description) => ({ type: 'string', description, required: true }
 const strArray = (description) => ({ type: 'array', items: { type: 'string' }, description })
 
 /**
- * The six tool definitions. Each returns **model-readable JSON** and each obeys
+ * The memory tool definitions. Each returns **model-readable JSON** and each obeys
  * the "deterministic, zero LLM" rule.
  *
  * @param {object} deps - the six implementations: `{ search, write, connect, rule, history, stats }`.
@@ -265,6 +265,7 @@ export function buildTools(deps) {
         id: str('accept、reject、revise 时的人格特征 id'),
         text: str('propose 或 revise 时的人格特征描述'),
         evidence: strArray('propose 时的观察依据或会话线索'),
+        source_ids: strArray('propose 时引用的已有记忆 id，帮助人格从自己的记忆中生长'),
         confidence: { type: 'number', description: '0 到 1 的初始/修订置信度，默认 0.5' },
         reason: str('accept、reject、revise 时必填；说明反馈或改变原因'),
       },
@@ -283,6 +284,28 @@ export function buildTools(deps) {
         required: ['ok', 'note'],
       },
       execute: (args) => deps.persona(args),
+    }),
+
+    tool({
+      name: 'memory_reflect',
+      description:
+        '准备一次自我反思：读取近期的 AI 自己的记忆和当前人格特征，寻找尚未记录的稳定倾向。' +
+        '这是只读入口；发现候选后，再用 memory_persona propose，并填写 source_ids。一次性的用户要求不能直接变成人格。',
+      parameters: {
+        limit: { type: 'integer', description: '最多提供几条近期记忆，默认 8，最大 20' },
+      },
+      schema: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          memories: { type: 'array', items: { type: 'object' } },
+          persona: { type: 'array', items: { type: 'object' } },
+          instruction: str('反思提示'),
+          note: str('结果说明'),
+        },
+        required: ['ok', 'memories', 'persona', 'instruction'],
+      },
+      execute: (args) => deps.reflect(args),
     }),
 
     tool({
