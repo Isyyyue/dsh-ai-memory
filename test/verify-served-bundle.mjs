@@ -74,11 +74,13 @@ check('兜底层是有条件渲染（否则盖住 canvas 吃掉指针事件）',
 check('有 dblclick 复位', /addEventListener\('dblclick'/.test(code))
 check('有 contextmenu 切换含退役', /addEventListener\('contextmenu'/.test(code))
 
-console.log('\n— UI 精简（主人要求只留图）—')
+console.log('\n— UI 精简（只留图，见 client.js 的 SHOW_* 常量）—')
 check('SHOW_HEAD = false', /const SHOW_HEAD = false/.test(code))
 check('SHOW_CHIPS = false', /const SHOW_CHIPS = false/.test(code))
 check('SHOW_TOOLBAR = false', /const SHOW_TOOLBAR = false/.test(code))
-check('SHOW_LEGEND = false', /const SHOW_LEGEND = false/.test(code))
+// The legend is deliberately ON: colour alone does not explain itself, so the
+// edge-type key stays visible even though every other chrome element is hidden.
+check('SHOW_LEGEND = true', /const SHOW_LEGEND = true/.test(code))
 const detail = code.slice(code.indexOf('function Detail('), code.indexOf('function FallbackGraph'))
 check('详情不显示裸 id', detail.length > 100 && !/node\.id/.test(detail))
 check('详情不显示版本/时间', !/node\.revision|node\.createdAt/.test(detail))
