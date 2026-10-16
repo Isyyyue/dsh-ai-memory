@@ -2,7 +2,7 @@
   "name": "dsh-ai-memory",
   "version": "0.1.0",
   "type": "module",
-  "description": "给 DSH 里的 AI 一层自己的判断记忆：判断节点 + 确定性取代（supersede）+ 双时态账本 + 双链。规则与判断分开治理，图谱作可解释性界面。",
+  "description": "给 DSH 里的 AI 一套属于自己的长期记忆，并让人格从记忆、反思和长期互动中逐渐生长。",
   "author": "Isyyyue",
   "repository": {
     "type": "git",
@@ -93,6 +93,8 @@
     "deepseek-harness",
     "dsh-plugin",
     "memory",
+    "personality",
+    "self-reflection",
     "supersede",
     "knowledge-graph"
   ],

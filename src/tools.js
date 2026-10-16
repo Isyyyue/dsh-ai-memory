@@ -83,7 +83,7 @@ const strArray = (description) => ({ type: 'array', items: { type: 'string' }, d
  * The memory tool definitions. Each returns **model-readable JSON** and each obeys
  * the "deterministic, zero LLM" rule.
  *
- * @param {object} deps - the six implementations: `{ search, write, connect, rule, history, stats }`.
+ * @param {object} deps - the memory implementations: `{ search, write, connect, rule, history, persona, reflect, stats }`.
  * @returns {object[]} array of tool definitions.
  */
 export function buildTools(deps) {
