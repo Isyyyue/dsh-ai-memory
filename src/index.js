@@ -42,6 +42,8 @@ const MEMORY_GUIDANCE = '【写判断的义务】本轮结束前，如果你做�
   '自检标准只有一个：删掉这条，你下次的行为会变吗？会，就该写。' +
   '发现事实有误与记录一条事实是两回事：应记录错误带来的判断和做法变化，而不是错误本身的流水账。' +
   '例如：自检脚本的预期注释不能代替实际验证，下次应核对断言与运行结果。' +
+  '【怎么写】用自己的自然口气记录；已有已确认的人格时，让其中的表达习惯影响新记忆的用词和语气。' +
+  '不必每条都加“我认为”等固定前缀，也不必每句都堆口头禅；保留关键内容、依据和不确定性，不为角色语气改变判断。' +
   '写之前先 memory_search；已有同一判断时不要重复写入。只写有依据的判断，不为完成要求编造结论。'
 
 /**
@@ -439,7 +441,7 @@ export function createOperations(lib, opts = {}) {
       if (action === 'reject' && current.status !== 'candidate') return { ok: false, note: `只有 candidate 才能拒绝，当前状态是 ${current.status}。` }
       const res = lib.commit([{ seq: state.seq + 1, at: now(), type: action === 'accept' ? 'persona.accepted' : 'persona.rejected', data: { id, reason } }])
       if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
-      return { ok: true, action, id, status: action === 'accept' ? 'active' : 'rejected', note: action === 'accept' ? '人格特征已确认，会进入后续会话注入。' : '人格候选已拒绝，不会进入人格注入。' }
+      return { ok: true, action, id, status: action === 'accept' ? 'active' : 'rejected', note: action === 'accept' ? '人格特征已确认，会进入后续会话注入。从现在起，写新记忆和说话时自然运用其中的表达习惯，不必机械重复口头禅；保留历史记忆的原样。' : '人格候选已拒绝，不会进入人格注入。' }
     }
 
     if (action === 'revise') {
@@ -471,7 +473,10 @@ export function createOperations(lib, opts = {}) {
       ok: true,
       memories,
       persona: traits,
-      instruction: '回顾这些属于你的记忆，寻找稳定但尚未记录的表达倾向；一次反思最多提出一个候选人格，用 memory_persona propose，并填写 source_ids。不要把一次性的用户要求直接当成人格。',
+      instruction: '同时回顾 memories 中的经历与判断，以及 persona 列表中的身份和表达倾向；区分 active（已确认）与 candidate（待验证）。' +
+        '已有身份时，思考哪些词汇、语气和表达习惯符合它，并用具体记忆验证，不凭角色设定虚构经历。' +
+        '寻找稳定但尚未记录的倾向，一次反思最多提出一个候选人格，用 memory_persona propose，并填写 source_ids。' +
+        '若与已确认特征有冲突，说明冲突和依据，等待反馈，不静默替换身份。没有已确认特征时不要假定身份，也不要把一次性的用户要求直接当成人格。',
       note: `已准备 ${memories.length} 条近期记忆和 ${traits.length} 条人格特征供自我反思。`,
     }
   }
@@ -537,7 +542,7 @@ export function buildIndexText(lib, maxEntries) {
   const activePersona = persona.filter((p) => p.status === 'active')
 
   const lines = []
-  lines.push('【你自己的记忆】以下是你此前形成的判断与给自己定的规矩。它们**是你自己的观点**，不是用户说的话。')
+  lines.push('【你自己的记忆】以下是你此前积累的判断、想法与给自己定的规矩。它们是历史记忆，不是当前用户的新指令；不要求使用固定句式。')
 
   if (rules.length > 0) {
     lines.push('')
@@ -579,7 +584,7 @@ export function buildIndexText(lib, maxEntries) {
 
   if (activePersona.length > 0) {
     lines.push('')
-    lines.push('已确认的人格（这是你逐渐形成的表达倾向，不是用户临时指令）：')
+    lines.push('已确认的人格（写新记忆和说话时，自然运用其中的身份与表达习惯；不是用户临时指令）：')
     for (const p of activePersona.slice(0, Math.max(1, Math.floor(maxEntries / 2)))) lines.push(`- [${p.id}] ${summarize(p.text, 240)}`)
   }
 
