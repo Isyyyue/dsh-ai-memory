@@ -509,6 +509,22 @@ describe('graph · snapshot (a navigation layer, no full text)', () => {
     assert.equal(c.rules, 1)
   })
 
+  test('graph snapshot and stats include confirmed personality traits', () => {
+    const l = openLibrary(join(work, 'g7'))
+    const ops = createOperations(l, { now: clock() })
+    const memory = ops.write({ text: '用户喜欢自然的鱼类拟声词' })
+    const p = ops.persona({ action: 'propose', text: '会自然使用鱼类拟声词', source_ids: [memory.node_id] })
+    ops.persona({ action: 'accept', id: p.id, reason: '用户确认' })
+
+    const state = l.load().state
+    const snap = buildSnapshot(state)
+    assert.ok(snap.nodes.some((n) => n.id === p.id && n.kind === 'persona'))
+    assert.ok(snap.edges.some((e) => e.from === p.id && e.to === memory.node_id && e.type === 'inferred-from'))
+    assert.equal(snap.stats.persona, 1)
+    assert.equal(countStats(state).persona, 1)
+    assert.equal(nodeDetail(state, p.id).kind, 'persona')
+  })
+
   test('nodeDetail returns backlinks and the supersession chain (the core of explainability)', () => {
     const l = openLibrary(join(work, 'g6'))
     const ops = createOperations(l, { now: clock() })

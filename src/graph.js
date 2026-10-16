@@ -67,7 +67,22 @@ export function buildSnapshot(state, opts = {}) {
    *    available on request (a right-click toggle). Grey dots no longer mix into
    *    the default view.
    */
-  const byId = state.nodes
+  const personaNodes = [...state.persona.values()]
+    .filter((p) => p.status === 'active')
+    .map((p) => ({
+      id: p.id,
+      text: p.text,
+      kind: KIND.PERSONA,
+      status: STATUS.ACTIVE,
+      createdAt: p.createdAt,
+      revision: p.history.length,
+      supersededBy: null,
+      subject: null,
+      relation: null,
+      object: null,
+      sourceIds: p.sourceIds,
+    }))
+  const byId = new Map([...state.nodes.values(), ...personaNodes].map((n) => [n.id, n]))
   const chainIds = new Set()
   if (includeRetired) {
     for (const n of active) {
@@ -91,8 +106,13 @@ export function buildSnapshot(state, opts = {}) {
   }
 
   const pool = includeRetired
-    ? [...state.nodes.values()]
-    : [...active, ...[...chainIds].map((id) => byId.get(id)).filter((n) => n !== undefined)]
+    ? [...state.nodes.values(), ...personaNodes]
+    : [...active, ...personaNodes, ...[...chainIds].map((id) => byId.get(id)).filter((n) => n !== undefined)]
+
+  const personaEdges = personaNodes.flatMap((p) => (p.sourceIds ?? [])
+    .filter((sourceId) => byId.has(sourceId))
+    .map((sourceId) => ({ from: p.id, to: sourceId, type: 'inferred-from' })))
+  const graphEdges = [...state.edges, ...personaEdges]
 
   // Stable sort: newest first, so the panel shows recent ideas at the top.
   pool.sort((a, b) => b.createdAt - a.createdAt || String(a.id).localeCompare(String(b.id)))
@@ -103,7 +123,7 @@ export function buildSnapshot(state, opts = {}) {
 
   // Degree: shows at a glance which judgment is a hub and which is an orphan.
   const degree = new Map()
-  for (const e of state.edges) {
+    for (const e of graphEdges) {
     if (!chosenIds.has(e.from) || !chosenIds.has(e.to)) continue
     degree.set(e.from, (degree.get(e.from) ?? 0) + 1)
     degree.set(e.to, (degree.get(e.to) ?? 0) + 1)
@@ -118,13 +138,13 @@ export function buildSnapshot(state, opts = {}) {
     degree: degree.get(n.id) ?? 0,
     createdAt: n.createdAt,
     revision: n.revision,
-    ...(n.supersededBy !== null ? { supersededBy: n.supersededBy } : {}),
-    ...(n.subject !== null ? { subject: n.subject } : {}),
-    ...(n.relation !== null ? { relation: n.relation } : {}),
-    ...(n.object !== null ? { object: n.object } : {}),
+    ...(n.supersededBy != null ? { supersededBy: n.supersededBy } : {}),
+    ...(n.subject != null ? { subject: n.subject } : {}),
+    ...(n.relation != null ? { relation: n.relation } : {}),
+    ...(n.object != null ? { object: n.object } : {}),
   }))
 
-  const edges = state.edges
+  const edges = graphEdges
     .filter((e) => chosenIds.has(e.from) && chosenIds.has(e.to))
     .map((e) => ({ from: e.from, to: e.to, type: e.type }))
 
@@ -145,22 +165,28 @@ export function buildSnapshot(state, opts = {}) {
  * @returns {object} Statistics object.
  */
 export function countStats(state, nodes, edges) {
-  const all = [...state.nodes.values()]
+  const persona = [...state.persona.values()]
+    .filter((p) => p.status === 'active')
+    .map((p) => ({ id: p.id, status: STATUS.ACTIVE, kind: KIND.PERSONA, sourceIds: p.sourceIds }))
+  const all = [...state.nodes.values(), ...persona]
   const active = activeNodes(state)
+  const activeAll = [...active, ...persona]
+  const graphEdges = [...state.edges, ...persona.flatMap((p) => (p.sourceIds ?? []).map((sourceId) => ({ from: p.id, to: sourceId })))]
   const connected = new Set()
-  for (const e of state.edges) {
+  for (const e of graphEdges) {
     connected.add(e.from)
     connected.add(e.to)
   }
   return {
     nodes: nodes === undefined ? all.length : nodes.length,
-    edges: edges === undefined ? state.edges.length : edges.length,
-    active: active.length,
+    edges: edges === undefined ? graphEdges.length : edges.length,
+    active: activeAll.length,
     retired: all.filter((n) => n.status !== STATUS.ACTIVE).length,
-    judgments: active.filter((n) => n.kind === KIND.JUDGMENT).length,
-    rules: active.filter((n) => n.kind === KIND.RULE).length,
-    insights: active.filter((n) => n.kind === KIND.INSIGHT).length,
-    orphans: active.filter((n) => !connected.has(n.id)).length,
+    judgments: activeAll.filter((n) => n.kind === KIND.JUDGMENT).length,
+    rules: activeAll.filter((n) => n.kind === KIND.RULE).length,
+    insights: activeAll.filter((n) => n.kind === KIND.INSIGHT).length,
+    persona: activeAll.filter((n) => n.kind === KIND.PERSONA).length,
+    orphans: activeAll.filter((n) => !connected.has(n.id)).length,
     problems: state.problems.length,
   }
 }
@@ -174,7 +200,25 @@ export function countStats(state, nodes, edges) {
  */
 export function nodeDetail(state, id) {
   const n = state.nodes.get(id)
-  if (n === undefined) return null
+  if (n === undefined) {
+    const p = state.persona.get(id)
+    if (p === undefined) return null
+    return {
+      id: p.id,
+      text: p.text,
+      kind: KIND.PERSONA,
+      status: p.status,
+      revision: p.history.length,
+      createdAt: p.createdAt,
+      sourceIds: p.sourceIds,
+      evidence: p.evidence,
+      confidence: p.confidence,
+      history: p.history.map((h) => ({ at: h.at, text: summarize(h.text, 300), reason: h.reason, action: h.action })),
+      backlinks: [],
+      outlinks: (p.sourceIds ?? []).map((sourceId) => ({ to: sourceId, type: 'inferred-from', note: '' })),
+      chain: [],
+    }
+  }
   const { chain } = supersedeChain(state, id)
   return {
     id: n.id,
