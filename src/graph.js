@@ -83,31 +83,11 @@ export function buildSnapshot(state, opts = {}) {
       sourceIds: p.sourceIds,
     }))
   const byId = new Map([...state.nodes.values(), ...personaNodes].map((n) => [n.id, n]))
-  const chainIds = new Set()
-  if (includeRetired) {
-    for (const n of active) {
-      const seen = new Set([n.id])
-      let frontier = [n.id]
-      while (frontier.length > 0) {
-        const next = []
-        for (const fromId of frontier) {
-          for (const e of state.edges) {
-            // Direction: from is the newer node, to is the older one it superseded → follow from downwards.
-            if (e.type !== 'supersedes' || e.from !== fromId) continue
-            if (seen.has(e.to)) continue
-            seen.add(e.to)
-            chainIds.add(e.to)
-            next.push(e.to)
-          }
-        }
-        frontier = next
-      }
-    }
-  }
-
+  // The supersession chain is intentionally excluded from the active view.
+  // Retired nodes are shown only when includeRetired is requested.
   const pool = includeRetired
     ? [...state.nodes.values(), ...personaNodes]
-    : [...active, ...personaNodes, ...[...chainIds].map((id) => byId.get(id)).filter((n) => n !== undefined)]
+    : [...active, ...personaNodes]
 
   const personaEdges = personaNodes.flatMap((p) => (p.sourceIds ?? [])
     .filter((sourceId) => byId.has(sourceId))

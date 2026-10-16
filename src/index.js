@@ -206,11 +206,26 @@ export function createOperations(lib, opts = {}) {
       const res = lib.commit(events)
       if (!res.ok) return { action: 'failed', note: `写盘失败：${res.reason}` }
     }
+
+    // Suggest related active judgments without creating a semantic link
+    // automatically. The relation type still requires the model's judgment.
+    let linkHint = ''
+    try {
+      const probe = searchNodes(activeNodes(state), text, { limit: 3 })
+      const others = probe.results.filter((n) => n.id !== outcome.nodeId && n.status === STATUS.ACTIVE)
+      if (others.length > 0) {
+        linkHint = '可能相关的既有判断：' + others.map((n) => `[${n.id}] ${summarize(n.text, 60)}`).join('；') +
+          '。若确有互补、矛盾或依据关系，用 memory_connect 连上。'
+      }
+    } catch {
+      // A hint must never turn a successful write into a failed operation.
+    }
     return {
       action: outcome.action,
       node_id: outcome.nodeId,
       ...(outcome.supersededId !== undefined ? { superseded_id: outcome.supersededId } : {}),
       ...(outcome.supersededText !== undefined ? { superseded_text: summarize(outcome.supersededText, 160) } : {}),
+      ...(linkHint !== '' ? { link_hint: linkHint } : {}),
       note: outcome.note,
     }
   }
@@ -446,7 +461,7 @@ export function createOperations(lib, opts = {}) {
       ok: true,
       memories,
       persona: traits,
-      instruction: '回顾这些属于你的记忆，寻找稳定但尚未记录的表达倾向；如果发现候选人格，请用 memory_persona propose，并填写 source_ids。不要把一次性的用户要求直接当成人格。',
+      instruction: '回顾这些属于你的记忆，寻找稳定但尚未记录的表达倾向；一次反思最多提出一个候选人格，用 memory_persona propose，并填写 source_ids。不要把一次性的用户要求直接当成人格。',
       note: `已准备 ${memories.length} 条近期记忆和 ${traits.length} 条人格特征供自我反思。`,
     }
   }
@@ -558,11 +573,19 @@ export function buildIndexText(lib, maxEntries) {
     for (const p of activePersona.slice(0, Math.max(1, Math.floor(maxEntries / 2)))) lines.push(`- [${p.id}] ${summarize(p.text, 240)}`)
   }
 
+  const orphans = active.filter((n) => backlinksOf(state, n.id).length + outlinksOf(state, n.id).length === 0).length
+  if (orphans > 0) {
+    lines.push('')
+    lines.push(`⚠️ 你有 ${orphans} 条判断还没有任何连接。相关判断之间应当用 memory_connect 连起来，避免记忆彼此孤立。`)
+  }
 
   lines.push('')
   lines.push(
-    '形成新判断、发现两条旧判断矛盾、被纠正、或改了主意时，先 memory_search 再 memory_write。' +
-      '只写判断，不写事实 —— 事实查得到，判断才是你自己的。写不出真判断时就不要写。',
+    '【写判断的义务】本轮结束前，如果你做了下面任何一件事，必须调用 memory_write 记一条：' +
+      '① 改变了主意（有东西被取代）；② 被用户纠正；③ 踩到一个坑并搞清了原因；' +
+      '④ 形成了一条会影响你下次做法的结论。' +
+      '自检标准只有一个：删掉这条，你下次的行为会变吗？会，就该写。' +
+      '写之前先 memory_search；只写判断，不写事实。',
   )
   return lines.join('\n')
 }

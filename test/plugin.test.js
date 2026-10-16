@@ -143,6 +143,16 @@ describe('operations · search and connect', () => {
     assert.equal(ops.search({ query: 'navigates' }).total, 1)
   })
 
+  test('a new judgment returns a non-binding hint for related memories', () => {
+    const l = openLibrary(join(work, 'ops6b'))
+    const ops = createOperations(l, { now: clock() })
+    ops.write({ text: '鱼喜欢晒肚皮和晒太阳' })
+    const next = ops.write({ text: '鱼喜欢晒肚皮' })
+    assert.equal(typeof next.link_hint, 'string')
+    assert.match(next.link_hint, /memory_connect/)
+    assert.equal(l.load().state.edges.length, 0, '提示不能自动建立语义关系')
+  })
+
   test('retired judgments are not returned by default', () => {
     const l = openLibrary(join(work, 'ops7'))
     const ops = createOperations(l, { now: clock() })
@@ -358,6 +368,7 @@ describe('index text · injected at session start', () => {
     assert.match(text, /规矩（你给自己定的/)
     assert.match(text, /Write judgments, not facts/)
     assert.match(text, /graph only navigates/)
+    assert.match(text, /写判断的义务/)
   })
 
   test('an index is injected, not full text — long bodies are truncated (guarding against context bloat)', () => {
@@ -374,6 +385,16 @@ describe('index text · injected at session start', () => {
     for (let i = 0; i < 10; i += 1) ops.write({ text: `judgment number ${i}` })
     const text = buildIndexText(l, 3)
     assert.match(text, /此处列前 3 条/)
+  })
+
+  test('the injected index exposes unconnected judgments and a concrete write trigger', () => {
+    const l = openLibrary(join(work, 'idx8'))
+    const ops = createOperations(l, { now: clock() })
+    ops.write({ text: '判断：鱼喜欢晒肚皮' })
+    const text = buildIndexText(l, 40)
+    assert.match(text, /还没有任何连接/)
+    assert.match(text, /本轮结束前/)
+    assert.match(text, /删掉这条，你下次的行为会变吗/)
   })
 
   test('**insights are injected too** — otherwise writing one is pointless', () => {

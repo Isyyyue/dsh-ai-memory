@@ -152,6 +152,7 @@ export function buildTools(deps) {
           node_id: str('新判断的 id（duplicate 时是既有判断的 id）'),
           superseded_id: str('被取代的旧判断 id'),
           superseded_text: str('被取代的旧判断原文摘要'),
+          link_hint: str('可能相关的既有判断；需要模型确认关系后再用 memory_connect 建立连接'),
           note: str('人可读的结果说明'),
         },
         required: ['action', 'note'],
