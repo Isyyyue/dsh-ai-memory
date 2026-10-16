@@ -211,10 +211,10 @@ describe('apply() · 注入文本真的能生成', () => {
     assert.match(text, /图谱只做导航/)
   })
 
-  test('空库时注入空串（不占上下文）', () => {
+  test('空库时仍注入写入提醒，支持首次积累', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'c2') })
-    assert.equal(rec.sections[0].text(), '')
+    assert.match(rec.sections[0].text(), /写判断的义务/)
   })
 
   test('记忆库损坏时注入降级为空串，不抛（不能因为记忆坏了让会话跑不动）', () => {

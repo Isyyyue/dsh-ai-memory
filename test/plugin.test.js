@@ -273,7 +273,7 @@ describe('operations · persona growth', () => {
     assert.equal(p.ok, true)
     assert.equal(ops.persona({ action: 'read' }).active.length, 0)
     assert.equal(ops.persona({ action: 'read' }).candidates.length, 1)
-    assert.equal(buildIndexText(l, 40), '', '未确认候选不应进入普通会话注入')
+    assert.ok(!buildIndexText(l, 40).includes('会自然使用鱼类拟声词'), '候选内容不应进入普通会话注入')
   })
 
   test('accept, revise and reject are all recorded in the trait history', () => {
@@ -306,9 +306,11 @@ describe('operations · persona growth', () => {
     const memory = ops.write({ text: '我喜欢自然地使用鱼类拟声词' })
     const p = ops.persona({ action: 'propose', text: '会自然使用鱼类拟声词', source_ids: [memory.node_id] })
     assert.equal(p.ok, true)
+    assert.ok(!ops.search({ query: '拟声词' }).results.some((r) => r.id === p.id), '候选只在显式反思和人格读取时出现')
+    assert.deepEqual(ops.persona({ action: 'read' }).candidates[0].source_ids, [memory.node_id])
+    ops.persona({ action: 'accept', id: p.id, reason: '测试确认' })
     const found = ops.search({ query: '拟声词' })
     assert.ok(found.results.some((r) => r.id === p.id && r.kind === 'persona'))
-    assert.deepEqual(ops.persona({ action: 'read' }).candidates[0].source_ids, [memory.node_id])
     const reflection = ops.reflect({ limit: 5 })
     assert.equal(reflection.ok, true)
     assert.ok(reflection.memories.some((m) => m.id === memory.node_id))
@@ -354,9 +356,10 @@ describe('operations · stats', () => {
 })
 
 describe('index text · injected at session start', () => {
-  test('an empty store injects an empty string (costing no context)', () => {
+  test('an empty store still receives the write protocol without fabricated memories', () => {
     const l = openLibrary(join(work, 'idx1'))
-    assert.equal(buildIndexText(l, 40), '')
+    assert.match(buildIndexText(l, 40), /写判断的义务/)
+    assert.doesNotMatch(buildIndexText(l, 40), /活跃判断（共/)
   })
 
   test('with judgments present, rules and judgment summaries are injected', () => {

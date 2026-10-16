@@ -35,6 +35,15 @@ import { createRoutes } from './routes.js'
 
 export const name = 'dsh-ai-memory'
 
+// Keep the write protocol available even before the first memory is created.
+const MEMORY_GUIDANCE = '【写判断的义务】本轮结束前，如果你做了下面任何一件事，必须调用 memory_write 记一条：' +
+  '① 改变了主意（有东西被取代）；② 被用户纠正；③ 踩到一个坑并搞清了原因；' +
+  '④ 形成了一条会影响你下次做法的结论；⑤ 发现自己的工具、文档或流程有错（包括注释）。' +
+  '自检标准只有一个：删掉这条，你下次的行为会变吗？会，就该写。' +
+  '发现事实有误与记录一条事实是两回事：应记录错误带来的判断和做法变化，而不是错误本身的流水账。' +
+  '例如：自检脚本的预期注释不能代替实际验证，下次应核对断言与运行结果。' +
+  '写之前先 memory_search；已有同一判断时不要重复写入。只写有依据的判断，不为完成要求编造结论。'
+
 /**
  * Services this plugin **requires**, declared truthfully.
  *
@@ -150,7 +159,7 @@ export function createOperations(lib, opts = {}) {
   const search = (args) => {
     const { state } = lib.load()
     const personaNodes = [...state.persona.values()]
-      .filter((p) => args?.include_retired === true ? true : p.status !== 'rejected')
+      .filter((p) => p.status === 'active' || (args?.include_retired === true && p.status === 'rejected'))
       .map((p) => ({
         id: p.id,
         text: p.text,
@@ -211,7 +220,7 @@ export function createOperations(lib, opts = {}) {
     // automatically. The relation type still requires the model's judgment.
     let linkHint = ''
     try {
-      const probe = searchNodes(activeNodes(state), text, { limit: 3 })
+      const probe = searchNodes(activeNodes(lib.load().state).filter((n) => n.id !== outcome.nodeId), text, { limit: 3 })
       const others = probe.results.filter((n) => n.id !== outcome.nodeId && n.status === STATUS.ACTIVE)
       if (others.length > 0) {
         linkHint = '可能相关的既有判断：' + others.map((n) => `[${n.id}] ${summarize(n.text, 60)}`).join('；') +
@@ -318,6 +327,7 @@ export function createOperations(lib, opts = {}) {
         return { ok: true, rules: [{ id: newId, text, revision: 1, history: [] }], note: `新规矩已建立（${newId}）。理由：${reason}` }
       }
 
+      if (state.nodes.get(id).kind !== KIND.RULE) return { ok: false, note: `${id} 不是规矩，不能通过 memory_rule 修改。` }
       const at = now()
       const res = lib.commit([{ seq: state.seq + 1, at, type: 'rule.amended', data: { id, after: text, reason } }])
       if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
@@ -512,13 +522,13 @@ export function createOperations(lib, opts = {}) {
  *
  * @param {object} lib - product of openLibrary().
  * @param {number} maxEntries - how many judgments to list at most.
- * @returns {string} the injected text; empty string when the store is empty (so it costs no context).
+ * @returns {string} Memory summaries and the write protocol, including on first use.
  */
 export function buildIndexText(lib, maxEntries) {
   const { state } = lib.load()
   const active = activeNodes(state)
   const hasPersona = [...state.persona.values()].some((p) => p.status === 'active')
-  if (active.length === 0 && !hasPersona) return ''
+  if (active.length === 0 && !hasPersona) return MEMORY_GUIDANCE
 
   const rules = active.filter((n) => n.kind === KIND.RULE)
   const judgments = active.filter((n) => n.kind === KIND.JUDGMENT)
@@ -580,15 +590,7 @@ export function buildIndexText(lib, maxEntries) {
   }
 
   lines.push('')
-  lines.push(
-    '【写判断的义务】本轮结束前，如果你做了下面任何一件事，必须调用 memory_write 记一条：' +
-      '① 改变了主意（有东西被取代）；② 被用户纠正；③ 踩到一个坑并搞清了原因；' +
-      '④ 形成了一条会影响你下次做法的结论；⑤ 发现自己的工具、文档或流程有错（包括注释）。' +
-      '自检标准只有一个：删掉这条，你下次的行为会变吗？会，就该写。' +
-      '发现事实有误与记录一条事实是两回事：应记录错误带来的判断和做法变化，而不是错误本身的流水账。' +
-      '例如：自检脚本的预期注释不能代替实际验证，下次应核对断言与运行结果。' +
-      '写之前先 memory_search；已有同一判断时不要重复写入。只写有依据的判断，不为完成要求编造结论。',
-  )
+  lines.push(MEMORY_GUIDANCE)
   return lines.join('\n')
 }
 

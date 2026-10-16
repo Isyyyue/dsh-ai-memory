@@ -31,7 +31,7 @@ import { homedir } from 'node:os'
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const BASE = process.env.DSH_WEB_BASE ?? 'http://127.0.0.1:19387'
-const PROFILE_NM = join(homedir(), '.dsh', 'profiles', 'desktop', 'node_modules')
+const PROFILE_NM = join(process.env.DSH_PROFILE_DIR ?? join(homedir(), '.dsh', 'profiles', 'desktop'), 'node_modules')
 
 /**
  * Recompute the host's artifact rev.
@@ -91,7 +91,11 @@ if (isMain || process.argv[1]?.endsWith('bundle-served.mjs')) {
   const results = []
 
   console.log('\n[this plugin]')
-  const mine = await probeBundle('dsh-ai-memory', join(root, 'lib', 'client.js'))
+  // The server revision belongs to the installed file, not a development clone
+  // whose identical content may have different timestamps.
+  const installedRoot = process.env.DSH_PLUGIN_ROOT ?? join(PROFILE_NM, 'dsh-ai-memory')
+  console.log(`  installed path: ${installedRoot}`)
+  const mine = await probeBundle('dsh-ai-memory', join(installedRoot, 'lib', 'client.js'))
   results.push(mine)
   console.log(`  rev=${mine.rev}  HTTP ${mine.status}  ${mine.bytes} bytes`)
   if (mine.served) {

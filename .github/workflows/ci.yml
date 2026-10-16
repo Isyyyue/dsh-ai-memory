@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [22.x]
+        node-version: [22.x, 24.x]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -25,4 +25,6 @@ jobs:
         run: npm test
       - name: Validate manifest
         run: node test/manifest-check.mjs
+      - name: Verify lifecycle
+        run: npm run test:e2e
 

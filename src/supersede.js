@@ -93,10 +93,12 @@ export function classify(incoming, active) {
   if (key === null) return { relation: 'unkeyed' }
 
   const obj = normalizeComponent(incoming.object)
+  if (obj === '') return { relation: 'unkeyed' }
   let sameKey = null
   for (const n of active) {
+    if (normalizeComponent(n.object) === '') continue
     if (assertionKey(n) !== key) continue
-    // Same key, same object → restatement. An empty object means there is no assertable difference, which also counts as a restatement.
+    // Same complete key and object means a restatement.
     if (normalizeComponent(n.object) === obj) return { relation: 'duplicate', target: n }
     sameKey = n
   }
@@ -118,7 +120,12 @@ export function classify(incoming, active) {
  */
 export function planWrite(state, input, ctx) {
   const active = activeNodesOf(state)
-  const verdict = classify(input, active)
+  // Only complete judgments participate in automatic supersession. Rules
+  // require governance, and an insight is intentionally provisional.
+  const kind = VALID_KINDS.has(input.kind) ? input.kind : KIND.JUDGMENT
+  const verdict = kind === KIND.JUDGMENT
+    ? classify(input, active.filter((n) => n.kind === KIND.JUDGMENT))
+    : { relation: 'unkeyed' }
   const at = ctx.at
   let seq = ctx.nextSeq
   const events = []

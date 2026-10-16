@@ -20,7 +20,7 @@
  *    auditable fact.
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync, renameSync, unlinkSync, mkdirSync, appendFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, statSync, renameSync, unlinkSync, mkdirSync, appendFileSync, openSync, readSync, closeSync, fstatSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 /** Ledger file name. */
@@ -102,7 +102,21 @@ export function appendEvents(filePath, events) {
     return { ok: false, reason: `无法建目录：${err.message}`, appended: 0 }
   }
   try {
-    appendFileSync(filePath, serializeLedger(events), 'utf8')
+    // A hand-edited or crash-truncated tail may lack its line separator.
+    // Preserve it verbatim, but keep new records on separate parseable lines.
+    let separator = ''
+    if (existsSync(filePath)) {
+      const fd = openSync(filePath, 'r')
+      try {
+        const size = fstatSync(fd).size
+        if (size > 0) {
+          const last = Buffer.alloc(1)
+          readSync(fd, last, 0, 1, size - 1)
+          if (last[0] !== 10) separator = '\n'
+        }
+      } finally { closeSync(fd) }
+    }
+    appendFileSync(filePath, separator + serializeLedger(events), 'utf8')
     return { ok: true, appended: events.length }
   } catch (err) {
     return { ok: false, reason: `追加失败：${err.message}`, appended: 0 }

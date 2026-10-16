@@ -153,6 +153,8 @@ plugin_manager action=remove_bundle target=dsh-ai-memory
 
 注入内容是摘要，不是整本账本。已确认的人格会单独列出；待确认的人格候选不会进入普通会话注入，只在 `memory_persona read` 和 `memory_reflect` 中出现，避免一次偶然观察被反复强化。
 
+首次使用、尚未写入任何记忆时，也会注入简短的写入规则，帮助 AI 开始积累。提醒不会自动保存对话；是否形成有效判断仍由调用方决定。
+
 ## 开发与验证
 
 项目要求 Node.js 22 或更高版本，并且运行时不依赖外部 npm 包：
@@ -171,6 +173,14 @@ node --test "test/**/*.test.js"
 ```
 
 不要使用 Node.js 的默认测试发现方式，否则 `test/` 下的辅助服务可能会被当成测试进程启动。
+
+已有本地 DSH 运行时的开发者，还可以用独立账本验证真实工具注册、调用、提示组装与 HTTP 路由：
+
+```powershell
+node test/host-runtime.mjs <DSH源码根目录>
+```
+
+此检查复用本地 DSH 服务，不安装依赖、不调用模型、不修改正式 profile 或记忆账本。`bundle-served.mjs` 则检查 desktop profile 实际安装的客户端；可用 `DSH_PROFILE_DIR` 或 `DSH_PLUGIN_ROOT` 指定其他安装位置。
 
 ## 已知边界
 
