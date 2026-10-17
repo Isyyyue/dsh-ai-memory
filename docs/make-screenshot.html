@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-ai-memory — README 截图（虚构数据）</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0d1117; overflow: hidden; }
+  /* 模拟 DSH 侧边栏的观感：深色、无边框 */
+  #stage { width: 880px; height: 640px; background: #0d1117; }
+  /* 插件 CSS 是 height:100%，这里必须让根元素撑满，否则 canvas 停在 300x150 */
+  #stage > .dsh-am-root { height: 100%; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script type="module">
+/**
+ * README 截图页 —— 全部虚构数据。
+ *
+ * 这一版**绕开 React**：直接 new 插件的 GraphRenderer 类，喂假数据。
+ * 原因：手写的最小 React 在 useEffect/ref 上不够可靠，而截图只需要渲染器本身。
+ */
+
+const NODES = [
+  { id: 'n_a1', kind: 'judgment', status: 'active',     text: '长文档应该先拆成可独立检索的块，再做索引' },
+  { id: 'n_a2', kind: 'judgment', status: 'superseded', text: '索引应该按整篇文档建，块会丢上下文' },
+  { id: 'n_a3', kind: 'judgment', status: 'active',     text: '召回质量差时先看分块边界，而不是换模型' },
+  { id: 'n_a4', kind: 'judgment', status: 'active',     text: '向量检索不适合精确的版本号查询' },
+  { id: 'n_b1', kind: 'judgment', status: 'active',     text: '评测集必须来自真实提问，自造题会高估效果' },
+  { id: 'n_b2', kind: 'judgment', status: 'superseded', text: '评测集可以从文档里反向生成' },
+  { id: 'n_b3', kind: 'judgment', status: 'active',     text: '离线指标涨了但线上没变，先怀疑查询分布不一致' },
+  { id: 'n_c1', kind: 'insight',  status: 'active',     text: '想法：把用户改过的答案当作隐式标注' },
+  { id: 'n_c2', kind: 'insight',  status: 'active',     text: '想法：分块大小或许该随文档类型自适应' },
+  { id: 'n_d1', kind: 'rule',     status: 'active',     text: '改检索策略前先记录当前指标' },
+  { id: 'n_d2', kind: 'rule',     status: 'active',     text: '不从单次失败就推翻整个方案，先复现三次' },
+  { id: 'n_e1', kind: 'judgment', status: 'active',     text: '缓存失效比缓存未命中更危险，因为它不报错' },
+  { id: 'n_e2', kind: 'judgment', status: 'active',     text: '任何静默降级都要能观测到' },
+]
+
+const EDGES = [
+  { from: 'n_a1', to: 'n_a2', type: 'supersedes' },
+  { from: 'n_a3', to: 'n_a1', type: 'complements' },
+  { from: 'n_a4', to: 'n_a1', type: 'complements' },
+  { from: 'n_b1', to: 'n_b2', type: 'supersedes' },
+  { from: 'n_b3', to: 'n_b1', type: 'complements' },
+  { from: 'n_c1', to: 'n_b1', type: 'complements' },
+  { from: 'n_c2', to: 'n_a1', type: 'tensions' },
+  { from: 'n_d1', to: 'n_b3', type: 'depends' },
+  { from: 'n_d2', to: 'n_b1', type: 'depends' },
+  { from: 'n_e1', to: 'n_e2', type: 'complements' },
+  { from: 'n_e2', to: 'n_d1', type: 'depends' },
+]
+
+const NODES_FULL = NODES.map((n) => ({
+  ...n,
+  label: n.text,
+  degree: EDGES.filter((e) => e.from === n.id || e.to === n.id).length,
+  createdAt: 1000,
+  revision: 1,
+}))
+
+// ---- 最小 React 垫片（只要够 factory 执行完）----
+const React = {
+  createElement: (type, props, ...kids) => ({ type, props: props ?? {}, kids }),
+  useRef: (init) => ({ current: init }),
+  useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
+  useEffect: () => {},
+  useMemo: (fn) => fn(),
+}
+
+let GraphRendererClass = null
+let ensureStylesFn = null
+
+window.__ModuleLoader__ = {
+  load({ factory }) {
+    // 拦截：把内部的 GraphRenderer 暴露出来
+    const src = factory.toString()
+    const api = factory((name) => {
+      if (name === 'react') return React
+      throw new Error('unexpected require: ' + name)
+    })
+    // 通过 apply 注册时拿不到内部类，改用下面的 eval 探测
+    const ctx = {
+      slots: { inject(_s, cb) { cb() }, register() {} },
+      effect(fn) { fn() },
+    }
+    try { api.apply(ctx) } catch (e) { console.warn('apply 抛了:', e.message) }
+  },
+}
+
+// ---- 直接 eval 出渲染器类：把 client.js 当文本取来，截取工厂内部 ----
+const res = await fetch('/lib/client.js')
+const code = await res.text()
+
+// 用 Function 在可控作用域里跑，拿到内部定义
+// client.js 结构：window.__ModuleLoader__.load({ id, factory: (require) => { ...定义...; return {name, inject, apply} } })
+// 我们把 return 语句改掉，直接吐出内部符号。
+const patched = code.replace(
+  /return\s*\{\s*name:\s*'dsh-ai-memory-client'[^}]*\}\s*$/m,
+  'return { GraphRenderer, ensureStyles, KIND_STYLE, edgeColor, themeColors }',
+)
+
+if (patched === code) {
+  document.title = 'PATCH_FAIL'
+  throw new Error('没找到 return 语句，无法暴露内部符号')
+}
+
+window.__ModuleLoader__ = {
+  load({ factory }) {
+    const out = factory((name) => {
+      if (name === 'react') return React
+      throw new Error('unexpected require: ' + name)
+    })
+    GraphRendererClass = out.GraphRenderer
+    ensureStylesFn = out.ensureStyles
+  },
+}
+
+const s = document.createElement('script')
+s.textContent = patched
+document.head.appendChild(s)
+
+// ---- 构造渲染器 ----
+const stage = document.getElementById('stage')
+if (!GraphRendererClass) {
+  document.title = 'NO_RENDERER'
+  stage.textContent = '没拿到 GraphRenderer'
+} else {
+  const root = document.createElement('div')
+  root.className = 'dsh-am-root'
+  const stageInner = document.createElement('div')
+  stageInner.className = 'dsh-am-stage'
+  stageInner.style.position = 'relative'
+  stageInner.style.flex = '1'
+  stageInner.style.minHeight = '0'
+  const canvas = document.createElement('canvas')
+  canvas.className = 'dsh-am-canvas'
+  stageInner.appendChild(canvas)
+  root.appendChild(stageInner)
+  stage.appendChild(root)
+
+  // 注入插件样式
+  if (ensureStylesFn) ensureStylesFn(document)
+
+  // 等样式生效再构造（否则量到 300x150）
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const r = new GraphRendererClass(canvas, { onSelect: () => {}, onToggleRetired: () => {} })
+    window.__r = r
+    r.setData(NODES_FULL, EDGES)
+    // 让力导向跑一会儿再截图
+    setTimeout(() => { document.title = 'READY' }, 3500)
+  }))
+}
+</script>
+</body>
+</html>
