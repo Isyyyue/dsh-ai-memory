@@ -373,7 +373,7 @@ describe('supersede · id 生成', () => {
 
   test('id 形状保持可读：n_<seq>_<时间前缀><随机后缀>', () => {
     const id = makeNodeId(1730000000000, 7)
-    assert.match(id, /^n_0007_[a-z0-9]{6}[0-9a-f]{8}$/)
+    assert.match(id, /^n_0007_[a-z0-9]{6}[0-9a-f]{16}$/)
   })
 })
 

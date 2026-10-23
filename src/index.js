@@ -24,14 +24,16 @@
  */
 
 import { join } from 'node:path'
+import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 
-import { foldEvents, foldAsOf, activeNodes, nodeOf, backlinksOf, outlinksOf, supersedeChain, KIND, STATUS } from './ledger.js'
+import { foldEvents, foldAsOf, activeNodes, nodeOf, backlinksOf, outlinksOf, supersedeChain, KIND, STATUS, QUESTION_STATUS } from './ledger.js'
 import { planWrite, makeNodeId } from './supersede.js'
 import { readLedger, appendEvents, withLedgerLock } from './store.js'
 import { search as searchNodes, summarize } from './query.js'
-import { buildTools } from './tools.js'
+import { buildTools, LINK_TYPES } from './tools.js'
 import { createRoutes } from './routes.js'
+import { focusFor, pressure } from './attention.js'
 
 export const name = 'dsh-ai-memory'
 
@@ -147,6 +149,36 @@ export function openLibrary(dir) {
   return { dir, ledgerPath, load, commit }
 }
 
+/** Derive the self model from folded ledger state without allowing the model to write it. */
+export function deriveSelfModel(state, events = []) {
+  const nodes = [...state.nodes.values()]
+  const judgments = nodes.filter((n) => n.kind === KIND.JUDGMENT)
+  const bySubject = new Map()
+  for (const n of judgments) {
+    if (typeof n.subject !== 'string' || n.subject === '') continue
+    if (!bySubject.has(n.subject)) bySubject.set(n.subject, [])
+    bySubject.get(n.subject).push(n)
+  }
+  const fragile = [...bySubject.entries()]
+    .map(([subject, list]) => ({ subject, n: list.length, overturned: list.filter((n) => n.status === STATUS.SUPERSEDED).length }))
+    .filter((x) => x.n >= 3)
+    .map((x) => ({ ...x, rate: x.overturned / x.n }))
+  const reasons = new Map()
+  for (const n of nodes) for (const h of n.history ?? []) {
+    const reason = typeof h.reason === 'string' ? h.reason.trim() : ''
+    if (reason !== '' && reason !== '建立') reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
+  }
+  const repeated = [...reasons.entries()].filter(([, n]) => n >= 2).map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n)
+  const tense = new Set()
+  for (const e of state.edges) if (e.type === 'tensions') { tense.add(e.from); tense.add(e.to) }
+  for (const e of events) if (e.type === 'edge.linked' && e.data?.type === 'tensions') { tense.add(e.data.from); tense.add(e.data.to) }
+  const blind = judgments.filter((n) => n.status === STATUS.ACTIVE && !tense.has(n.id)).map((n) => ({ id: n.id, text: summarize(n.text, 200) }))
+  const selfNodes = nodes.filter((n) => n.trigger === 'self')
+  const selfRatio = nodes.length === 0 ? 0 : selfNodes.length / nodes.length
+  const selfSurvival = selfNodes.length === 0 ? 0 : selfNodes.filter((n) => n.status === STATUS.ACTIVE).length / selfNodes.length
+  return { ok: true, fragile, repeated, blind, selfRatio, selfSurvival, note: judgments.length === 0 ? '还没有足够判断形成自我模型。' : '这是从账本折叠出的行为模式，不是模型自行编写的身份描述。' }
+}
+
 /**
  * High-level memory-store operations. Every tool implementation lands here so
  * tests can hand it a temporary directory directly.
@@ -232,6 +264,22 @@ export function createOperations(lib, opts = {}) {
   const write = (args) => {
     const text = String(args?.text ?? '').trim()
     if (text === '') return { action: 'rejected', note: '判断不能为空。' }
+    const kind = args?.kind === KIND.RULE ? KIND.RULE : args?.kind === KIND.INSIGHT ? KIND.INSIGHT : KIND.JUDGMENT
+    const trigger = args?.trigger === 'self' ? 'self' : args?.trigger === 'evidence' ? 'evidence' : 'user'
+    if (trigger === 'self' && kind !== KIND.INSIGHT) {
+      return { action: 'rejected', note: '自发思考不能直接固化为 judgment；请先记录 insight，等待外部证据复核。' }
+    }
+    const citations = Array.isArray(args?.citations) ? args.citations.filter((x) => typeof x === 'string' && x !== '') : []
+    if (trigger === 'self') {
+      const { state } = lib.load()
+      const invalid = citations.filter((citation) => {
+        if (state.nodes.has(citation)) return false
+        try { return !statSync(citation).isFile() } catch { return true }
+      })
+      if (citations.length === 0 || invalid.length > 0) {
+        return { action: 'rejected', note: invalid.length > 0 ? `自发思考的依据不存在：${invalid.join(', ')}` : '自发思考必须提供真实的 citations。' }
+      }
+    }
 
     // The read-plan-append sequence runs under the ledger lock; see atomically()
     // for why the load must happen *inside* it.
@@ -263,11 +311,9 @@ export function createOperations(lib, opts = {}) {
            */
           trigger: args?.trigger,
           // Three node kinds: judgment (default) / rule (governed) / insight (not superseded).
-          kind: args?.kind === KIND.RULE ? KIND.RULE
-            : args?.kind === KIND.INSIGHT ? KIND.INSIGHT
-              : KIND.JUDGMENT,
+          kind,
           tags: Array.isArray(args?.tags) ? args.tags : [],
-          citations: Array.isArray(args?.citations) ? args.citations : [],
+          citations,
           reason: args?.reason,
         },
         { at, nextSeq: state.seq, newId },
@@ -304,16 +350,18 @@ export function createOperations(lib, opts = {}) {
   const connect = (args) => {
     const from = String(args?.from ?? '')
     const to = String(args?.to ?? '')
+    const action = args?.action === 'unlink' ? 'unlink' : 'link'
     const type = String(args?.type ?? 'complements')
     if (from === '' || to === '') return { ok: false, note: 'from 与 to 都必填。' }
     if (from === to) return { ok: false, note: '不能自连。' }
+    if (!LINK_TYPES.includes(type) || type === 'supersedes') return { ok: false, note: 'type 必须是可手工维护的关系类型，supersedes 只能由引擎产生。' }
     const planned = atomically((state) => {
       if (!state.nodes.has(from)) return { error: `找不到判断 ${from}。先 memory_search 确认 id。` }
       if (!state.nodes.has(to)) return { error: `找不到判断 ${to}。先 memory_search 确认 id。` }
       const at = now()
       return {
-        events: [{ seq: state.seq + 1, at, type: 'edge.linked', data: { from, to, type, note: String(args?.note ?? '') } }],
-        result: { ok: true, note: `已在 ${from} 与 ${to} 之间建立 ${type} 关系（两边都会看到，不留单向边）。` },
+        events: [{ seq: state.seq + 1, at, type: action === 'link' ? 'edge.linked' : 'edge.unlinked', data: { from, to, type, note: String(args?.note ?? '') } }],
+        result: { ok: true, note: action === 'link' ? `已在 ${from} 与 ${to} 之间建立 ${type} 关系（两边都会看到，不留单向边）。` : `已解除 ${from} 与 ${to} 之间的 ${type} 关系。` },
       }
     })
     if (planned.error !== undefined) return { ok: false, note: planned.error }
@@ -491,6 +539,7 @@ export function createOperations(lib, opts = {}) {
 
     const id = String(args?.id ?? '')
     if (action === 'accept' || action === 'reject') {
+      if (action === 'accept' && args?.by === 'self') return { ok: false, note: '人格 accept 只能由用户触发，self cycle 只能提出候选。' }
       const planned = atomically((currentState) => {
         const current = currentState.persona.get(id)
         if (current === undefined) return { error: `找不到人格特征 ${id}。先用 action=read 查看。` }
@@ -526,6 +575,113 @@ export function createOperations(lib, opts = {}) {
     return { ok: false, note: `不认识的 action：${action}（支持 read / propose / accept / reject / revise）。` }
   }
 
+  const question = (args) => {
+    const action = String(args?.action ?? 'read')
+    if (action === 'read') {
+      const { state } = lib.load()
+      const status = args?.status === 'closed' || args?.status === 'abandoned' ? args.status : QUESTION_STATUS.OPEN
+      const questions = [...state.questions.values()].filter((q) => q.status === status)
+      return { ok: true, questions, note: questions.length === 0 ? '没有符合条件的未完成问题。' : `共 ${questions.length} 个问题。` }
+    }
+
+    if (action === 'open') {
+      const text = String(args?.text ?? '').trim()
+      if (text === '') return { ok: false, note: '问题不能为空。' }
+      const sourceIds = Array.isArray(args?.source_ids) ? args.source_ids : []
+      if (sourceIds.some((x) => typeof x !== 'string' || x.trim() === '')) return { ok: false, note: 'source_ids 中每个 id 都必须是非空字符串。' }
+      const urgency = Number.isFinite(Number(args?.urgency)) ? Number(args.urgency) : 0.5
+      const confidence = Number.isFinite(Number(args?.confidence)) ? Number(args.confidence) : 0.2
+      const reason = String(args?.reason ?? '').trim()
+      const planned = atomically((state) => {
+        const invalid = sourceIds.filter((id) => !state.nodes.has(id) || state.nodes.get(id).status !== STATUS.ACTIVE)
+        if (invalid.length > 0) return { error: `问题引用了不存在或已退役的记忆：${invalid.join(', ')}` }
+        const at = now()
+        const id = makeNodeId(at, state.seq + 1).replace(/^n_/, 'q_')
+        return {
+          events: [{ seq: state.seq + 1, at, type: 'question.opened', data: { id, text, urgency, confidence, sourceIds, reason } }],
+          result: { ok: true, action: 'opened', id, status: QUESTION_STATUS.OPEN, note: '问题已记录，后续思考周期可以关注它。' },
+        }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      return planned.result
+    }
+
+    const id = String(args?.id ?? '')
+    if (id === '') return { ok: false, note: '这个 action 需要问题 id。' }
+    if (action === 'touch') {
+      const planned = atomically((state) => {
+        const q = state.questions.get(id)
+        if (q === undefined) return { error: `找不到问题 ${id}。` }
+        if (q.status !== QUESTION_STATUS.OPEN) return { error: `问题 ${id} 已经是 ${q.status}，不能继续 touch。` }
+        const at = now()
+        return { events: [{ seq: state.seq + 1, at, type: 'question.touched', data: { id, note: String(args?.note ?? ''), confidence: args?.confidence, urgency: args?.urgency } }], result: { ok: true, action: 'touched', id, note: '已记录一次思考尝试。' } }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      return planned.result
+    }
+
+    if (action === 'close' || action === 'abandon') {
+      const note = String(args?.note ?? '').trim()
+      if (note === '') return { ok: false, note: '关闭或放弃问题必须给 note。' }
+      const resolvedBy = String(args?.resolved_by ?? '').trim()
+      const planned = atomically((state) => {
+        const q = state.questions.get(id)
+        if (q === undefined) return { error: `找不到问题 ${id}。` }
+        if (q.status !== QUESTION_STATUS.OPEN) return { error: `问题 ${id} 已经是 ${q.status}。` }
+        if (action === 'close' && resolvedBy !== '' && !state.nodes.has(resolvedBy)) return { error: `resolved_by 指向不存在的记忆：${resolvedBy}` }
+        const at = now()
+        return {
+          events: [{ seq: state.seq + 1, at, type: action === 'close' ? 'question.closed' : 'question.abandoned', data: { id, resolvedBy: resolvedBy || null, note } }],
+          result: { ok: true, action: action === 'close' ? 'closed' : 'abandoned', id, note },
+        }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      return planned.result
+    }
+    return { ok: false, note: `不认识的问题 action：${action}。` }
+  }
+
+  const cycle = (args) => {
+    const action = String(args?.action ?? 'read')
+    if (action === 'read') {
+      const { state } = lib.load()
+      const limit = Number.isInteger(Number(args?.limit)) && Number(args.limit) > 0 ? Math.min(Number(args.limit), 50) : 10
+      return { ok: true, cycles: [...state.cycles.values()].sort((a, b) => b.startedAt - a.startedAt).slice(0, limit) }
+    }
+    if (action === 'begin') {
+      const trigger = args?.trigger === 'self' ? 'self' : 'user'
+      const { state } = lib.load()
+      const focus = focusFor(state, now(), { max: 3 })
+      const planned = atomically((currentState) => {
+        const at = now()
+        const selected = focusFor(currentState, at, { max: 3 })
+        const id = makeNodeId(at, currentState.seq + 1).replace(/^n_/, 'c_')
+        return {
+          events: [{ seq: currentState.seq + 1, at, type: 'cycle.started', data: { id, trigger, focus: selected.map((q) => q.id) } }],
+          result: { ok: true, action: 'started', id, focus: selected, instruction: selected.length === 0 ? '没有问题达到注意力阈值；不要为了产出而制造主题。' : '围绕 focus 中的问题思考，必要时 touch、write insight，或在有依据时关闭问题。' },
+        }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      return planned.result
+    }
+    if (action === 'end') {
+      const id = String(args?.id ?? '')
+      const produced = Number.isFinite(Number(args?.produced)) ? Math.max(0, Number(args.produced)) : 0
+      const planned = atomically((state) => {
+        const current = state.cycles.get(id)
+        if (current === undefined) return { error: `找不到周期 ${id}。` }
+        if (current.endedAt !== null) return { error: `周期 ${id} 已经结束。` }
+        const at = now()
+        return { events: [{ seq: state.seq + 1, at, type: 'cycle.ended', data: { id, produced, note: String(args?.note ?? '') } }], result: { ok: true, action: 'ended', id, produced, note: produced === 0 ? '本轮思考完成，但没有足够依据形成新记忆。' : '本轮思考已结束。' } }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      return planned.result
+    }
+    return { ok: false, note: `不认识的 cycle action：${action}。` }
+  }
+
+  const selfModel = () => { const loaded = lib.load(); return deriveSelfModel(loaded.state, loaded.events) }
+
   const reflect = (args) => {
     const { state } = lib.load()
     const limitRaw = Number(args?.limit)
@@ -551,7 +707,8 @@ export function createOperations(lib, opts = {}) {
   }
 
   const stats = () => {
-    const { state, problems } = lib.load()
+    const { state, events, problems } = lib.load()
+    const model = deriveSelfModel(state, events)
     const all = [...state.nodes.values()]
     const judgments = all.filter((n) => n.kind === KIND.JUDGMENT)
     const rules = all.filter((n) => n.kind === KIND.RULE)
@@ -571,6 +728,9 @@ export function createOperations(lib, opts = {}) {
       persona: persona.filter((p) => p.status === 'active').length,
       persona_candidates: persona.filter((p) => p.status === 'candidate').length,
       persona_rejected: persona.filter((p) => p.status === 'rejected').length,
+      questions_open: [...state.questions.values()].filter((q) => q.status === QUESTION_STATUS.OPEN).length,
+      selfRatio: model.selfRatio,
+      selfSurvival: model.selfSurvival,
       retired: all.filter((n) => n.status !== STATUS.ACTIVE).length,
       edges: state.edges.length,
       orphans,
@@ -582,7 +742,7 @@ export function createOperations(lib, opts = {}) {
     }
   }
 
-  return { search, write, connect, history, rule, persona, reflect, stats }
+  return { search, write, connect, history, rule, persona, reflect, question, cycle, selfModel, stats }
 }
 
 /**
@@ -599,10 +759,12 @@ export function createOperations(lib, opts = {}) {
  * @returns {string} Memory summaries and the write protocol, including on first use.
  */
 export function buildIndexText(lib, maxEntries) {
-  const { state } = lib.load()
+  const { state, events } = lib.load()
   const active = activeNodes(state)
   const hasPersona = [...state.persona.values()].some((p) => p.status === 'active')
-  if (active.length === 0 && !hasPersona) return MEMORY_GUIDANCE
+  const hasQuestions = [...state.questions.values()].some((q) => q.status === QUESTION_STATUS.OPEN)
+  const { problems } = lib.load()
+  if (active.length === 0 && !hasPersona && !hasQuestions && problems.length === 0) return MEMORY_GUIDANCE
 
   const rules = active.filter((n) => n.kind === KIND.RULE)
   const judgments = active.filter((n) => n.kind === KIND.JUDGMENT)
@@ -616,7 +778,7 @@ export function buildIndexText(lib, maxEntries) {
   if (rules.length > 0) {
     lines.push('')
     lines.push('规矩（你给自己定的，改它要说明理由）：')
-    for (const r of rules) lines.push(`- [${r.id}] ${summarize(r.text, 300)}`)
+    for (const r of rules.slice().sort((a, b) => b.createdAt - a.createdAt).slice(0, Math.max(1, Number(maxEntries) || 1))) lines.push(`- [${r.id}] ${summarize(r.text, 300)}`)
   }
 
   if (judgments.length > 0) {
@@ -657,6 +819,34 @@ export function buildIndexText(lib, maxEntries) {
     for (const p of activePersona.slice(0, Math.max(1, Math.floor(maxEntries / 2)))) lines.push(`- [${p.id}] ${summarize(p.text, 240)}`)
   }
 
+  const focused = focusFor(state, Date.now(), { max: 3, minPressure: 0.2 })
+  if (focused.length > 0) {
+    lines.push('')
+    lines.push('【你上次没想完的事】')
+    for (const q of focused) {
+      lines.push(`- [${q.id}] 压力 ${pressure(q, Date.now()).toFixed(2)} · 想过 ${q.attempts} 次 · 置信 ${q.confidence.toFixed(2)}`)
+      lines.push(`  ${summarize(q.text, 240)}`)
+      if (q.sourceIds.length > 0) lines.push(`  ↳ 依据 ${q.sourceIds.join(', ')}`)
+    }
+  }
+
+  const model = deriveSelfModel(state, events)
+  const modelLines = []
+  if (model.fragile.length > 0) modelLines.push('脆弱判断：' + model.fragile.slice(0, 2).map((x) => x.subject + ' ' + Math.round(x.rate * 100) + '% 被推翻').join('；'))
+  if (model.repeated.length > 0) modelLines.push('重复理由：' + model.repeated[0].reason)
+  if (model.blind.length > 0) modelLines.push('尚未连接 tensions 的活跃判断：' + model.blind.length + ' 条')
+  modelLines.push(`self 写入占比 ${model.selfRatio.toFixed(2)}，仍活跃 ${model.selfSurvival.toFixed(2)}`)
+  if (modelLines.length > 0) {
+    lines.push('')
+    lines.push('【关于你自己】')
+    for (const line of modelLines.slice(0, 4)) lines.push(`- ${line}`)
+  }
+
+  if (problems.length > 0) {
+    lines.push('')
+    lines.push(`⚠️ 账本有 ${problems.length} 个问题，需要在继续写入前核对：`)
+    for (const problem of problems.slice(0, 3)) lines.push(`- ${problem}`)
+  }
   const orphans = active.filter((n) => backlinksOf(state, n.id).length + outlinksOf(state, n.id).length === 0).length
   if (orphans > 0) {
     lines.push('')

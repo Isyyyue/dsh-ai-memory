@@ -1,6 +1,6 @@
 {
   "name": "dsh-ai-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "给 DSH 里的 AI 一套属于自己的长期记忆，并让人格从记忆、反思和长期互动中逐渐生长。",
   "author": "Isyyyue",
@@ -23,10 +23,14 @@
     "lib/",
     "cordis.patch.yml",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=22"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.2.1-rc.2"
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.js\"",
@@ -44,7 +48,7 @@
       ]
     },
     "requires": {
-      "tested": "0.1.7-rc.2",
+      "tested": "0.2.1-rc.2",
       "checks": [
         {
           "kind": "profileDep"
@@ -83,6 +87,19 @@
             "edges",
             "stats",
             "truncated"
+          ]
+        },
+        {
+          "kind": "http",
+          "path": "/plugins/dsh-ai-memory/questions",
+          "expect": 200
+        },
+        {
+          "kind": "httpFields",
+          "path": "/plugins/dsh-ai-memory/questions",
+          "keys": [
+            "ok",
+            "questions"
           ]
         }
       ]

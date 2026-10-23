@@ -91,17 +91,20 @@ function fakeCtx(opts = {}) {
 }
 
 describe('apply() · 工具真的注册了（防静默失效）', () => {
-  test('八个工具全部注册，名字正确', () => {
+  test('十一个工具全部注册，名字正确', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a1') })
     const names = rec.tools.map((t) => t.name).sort()
     assert.deepEqual(names, [
       'memory_connect',
+      'memory_cycle',
       'memory_history',
       'memory_persona',
+      'memory_question',
       'memory_reflect',
       'memory_rule',
       'memory_search',
+      'memory_self',
       'memory_stats',
       'memory_write',
     ])
@@ -159,7 +162,7 @@ describe('apply() · 工具真的注册了（防静默失效）', () => {
     const { ctx, rec } = fakeCtx()
     apply(ctx, { dir: join(work, 'a6'), injectIndex: false })
     assert.equal(rec.sections.length, 0)
-    assert.equal(rec.tools.length, 8, '关注入不该影响工具')
+    assert.equal(rec.tools.length, 11, '关注入不该影响工具')
   })
 
   test('enabled: false 时什么都不注册', () => {
@@ -174,18 +177,19 @@ describe('apply() · webServer 是局部可选依赖（关键）', () => {
   test('没有 webServer 时，工具**照样**注册（不该整条不激活）', () => {
     const { ctx, rec } = fakeCtx({ withWebServer: false })
     apply(ctx, { dir: join(work, 'b1') })
-    assert.equal(rec.tools.length, 8, '缺 webServer 不能让工具消失')
+    assert.equal(rec.tools.length, 11, '缺 webServer 不能让工具消失')
     assert.equal(rec.sections.length, 1)
     assert.equal(rec.routes.length, 0)
   })
 
-  test('有 webServer 时，三条数据路由注册了', () => {
+  test('有 webServer 时，四条数据路由注册了', () => {
     const { ctx, rec } = fakeCtx({ withWebServer: true })
     apply(ctx, { dir: join(work, 'b2') })
-    assert.equal(rec.routes.length, 3)
+    assert.equal(rec.routes.length, 4)
     const paths = rec.routes.map((r) => r.path).sort()
     assert.deepEqual(paths, [
       '/plugins/dsh-ai-memory/node',
+      '/plugins/dsh-ai-memory/questions',
       '/plugins/dsh-ai-memory/snapshot',
       '/plugins/dsh-ai-memory/stats',
     ])

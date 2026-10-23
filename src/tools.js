@@ -83,7 +83,7 @@ const strArray = (description) => ({ type: 'array', items: { type: 'string' }, d
  * The memory tool definitions. Each returns **model-readable JSON** and each obeys
  * the "deterministic, zero LLM" rule.
  *
- * @param {object} deps - the memory implementations: `{ search, write, connect, rule, history, persona, reflect, stats }`.
+ * @param {object} deps - the memory implementations: `{ search, write, connect, rule, history, persona, reflect, question, cycle, selfModel, stats }`.
  * @returns {object[]} array of tool definitions.
  */
 export function buildTools(deps) {
@@ -140,7 +140,9 @@ export function buildTools(deps) {
         subject: str('可选。三元组主语，如 "svc"、"本项目"'),
         relation: str('可选。三元组关系，如 "port"、"测试框架"'),
         object: str('可选。三元组宾语（可变的那个值），如 "8080"'),
-        kind: str('judgment（默认）/ rule（规矩，受治理）/ insight（想法、观察、疑问，不参与取代）'),
+        kind: { type: 'string', enum: ['judgment', 'rule', 'insight'], description: 'judgment（默认）/ rule（规矩）/ insight（想法、观察、疑问）' },
+        scope: str('可选语境，例如 dev / prod；不同 scope 的同一 subject/relation 可以并存，互不取代'),
+        trigger: { type: 'string', enum: ['user', 'evidence', 'self'], description: '谁触发了这条记忆，默认 user' },
         tags: strArray('可选标签'),
         citations: strArray('可选。这条判断的依据出处（会话 id、文件路径等）—— 引用是记忆的一等公民'),
         reason: str('可选。若是取代旧判断，说明为什么改主意'),
@@ -169,7 +171,8 @@ export function buildTools(deps) {
       parameters: {
         from: strReq('起点判断 id'),
         to: strReq('终点判断 id'),
-        type: str('关系类型，默认 complements'),
+        action: { type: 'string', enum: ['link', 'unlink'], description: '建立或解除关系，默认 link' },
+        type: { type: 'string', enum: LINK_TYPES.filter((x) => x !== 'supersedes'), description: '关系类型，默认 complements' },
         note: str('可选。说明这两条为什么是这种关系'),
       },
       schema: {
@@ -269,6 +272,7 @@ export function buildTools(deps) {
         source_ids: strArray('propose 时引用的已有记忆 id，帮助人格从自己的记忆中生长'),
         confidence: { type: 'number', description: '0 到 1 的初始/修订置信度，默认 0.5' },
         reason: str('accept、reject、revise 时必填；说明反馈或改变原因'),
+        by: { type: 'string', enum: ['user', 'self'], description: 'accept 的触发者；self 会被拒绝' },
       },
       schema: {
         type: 'object',
@@ -310,6 +314,47 @@ export function buildTools(deps) {
     }),
 
     tool({
+      name: 'memory_question',
+      description: '记录、触碰、关闭或放弃一个尚未想完的问题。问题是思考义务，不是已经确认的事实。',
+      parameters: {
+        action: { type: 'string', enum: ['open', 'read', 'touch', 'close', 'abandon'], required: true },
+        id: str('问题 id'),
+        text: str('open 时的问题内容'),
+        urgency: { type: 'number', description: '0 到 1，重要程度' },
+        confidence: { type: 'number', description: '0 到 1，当前把握程度' },
+        source_ids: strArray('open 时引用的活跃记忆 id'),
+        reason: str('open 时记录为什么留下这个问题'),
+        note: str('touch / close / abandon 的说明；关闭或放弃时必填'),
+        resolved_by: str('close 时解决它的记忆 id'),
+      },
+      schema: { type: 'object', properties: { ok: { type: 'boolean' }, action: str('结果动作'), id: str('问题 id'), questions: { type: 'array', items: { type: 'object' } }, note: str('结果说明') }, required: ['ok'] },
+      execute: (args) => deps.question(args),
+    }),
+
+    tool({
+      name: 'memory_cycle',
+      description: '开始、结束或读取一次思考周期；即使没有写出记忆，produced=0 也会留下周期记录。',
+      parameters: {
+        action: { type: 'string', enum: ['begin', 'end', 'read'], required: true },
+        trigger: { type: 'string', enum: ['user', 'self'], description: '周期由用户触发还是自行开始' },
+        id: str('end 时的周期 id'),
+        produced: { type: 'integer', description: '本轮产生的记忆数量，默认 0' },
+        note: str('结束说明'),
+        limit: { type: 'integer', description: 'read 时最多返回几条' },
+      },
+      schema: { type: 'object', properties: { ok: { type: 'boolean' }, action: str('结果动作'), id: str('周期 id'), focus: { type: 'array', items: { type: 'object' } }, cycles: { type: 'array', items: { type: 'object' } }, instruction: str('思考指引'), note: str('结果说明') }, required: ['ok'] },
+      execute: (args) => deps.cycle(args),
+    }),
+
+    tool({
+      name: 'memory_self',
+      description: '从账本计算脆弱判断、重复修订理由、盲区和 self 写入存活率；只读，不让模型自行编写自我描述。',
+      parameters: {},
+      schema: { type: 'object', properties: { ok: { type: 'boolean' }, fragile: { type: 'array', items: { type: 'object' } }, repeated: { type: 'array', items: { type: 'object' } }, blind: { type: 'array', items: { type: 'object' } }, selfRatio: { type: 'number' }, selfSurvival: { type: 'number' }, note: str('结果说明') }, required: ['ok', 'selfRatio', 'selfSurvival'] },
+      execute: () => deps.selfModel(),
+    }),
+
+    tool({
       name: 'memory_stats',
       description: '记忆库体检：判断、规矩、人格特征、被取代数、双链数、孤立判断、数据问题。只读，不改任何东西。',
       parameters: {},
@@ -322,6 +367,9 @@ export function buildTools(deps) {
           persona: { type: 'integer', description: '已确认人格特征数' },
           persona_candidates: { type: 'integer', description: '待确认人格候选数' },
           persona_rejected: { type: 'integer', description: '已拒绝人格候选数' },
+          questions_open: { type: 'integer', description: '未完成问题数' },
+          selfRatio: { type: 'number', description: 'self 触发记忆占比' },
+          selfSurvival: { type: 'number', description: 'self 触发记忆仍活跃的比例' },
           retired: { type: 'integer' },
           edges: { type: 'integer' },
           orphans: { type: 'integer', description: '一条链都没有的判断数' },

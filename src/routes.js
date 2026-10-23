@@ -13,6 +13,7 @@
  */
 
 import { buildSnapshot, nodeDetail, countStats } from './graph.js'
+import { pressure } from './attention.js'
 
 /** Route prefix. The client side uses the same constant; change both together. */
 export const ROUTE_BASE = '/plugins/dsh-ai-memory'
@@ -116,6 +117,22 @@ export function createRoutes(lib, opts = {}) {
   }
 
   return [
+    {
+      kind: 'exact',
+      path: `${ROUTE_BASE}/questions`,
+      handler: (req, res) => {
+        guarded(req, res, () => {
+          const { state } = lib.load()
+          const now = Date.now()
+          const questions = [...state.questions.values()]
+            .filter((q) => q.status === 'open')
+            .map((q) => ({ id: q.id, text: q.text, urgency: q.urgency, confidence: q.confidence, attempts: q.attempts, pressure: pressure(q, now), source_ids: q.sourceIds }))
+            .sort((a, b) => b.pressure - a.pressure)
+            .slice(0, 100)
+          return { ok: true, questions }
+        })
+      },
+    },
     {
       kind: 'exact',
       path: `${ROUTE_BASE}/snapshot`,

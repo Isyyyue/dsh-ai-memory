@@ -132,6 +132,7 @@ export function buildSnapshot(state, opts = {}) {
     nodes,
     edges,
     stats: countStats(state, nodes, edges),
+    retiredCount: [...state.nodes.values()].filter((n) => n.status !== STATUS.ACTIVE).length,
     truncated,
   }
 }

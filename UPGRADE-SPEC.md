@@ -2,27 +2,27 @@
 
 > 目标：把「记得住事」升级为「会自己接着想」。
 > 仓库：`dsh-plugins/plugins/dsh-ai-memory`
-> 现状基线：`npm test` **356/356 绿**，`node test/e2e.mjs` 40/40 绿，`node test/manifest-check.mjs` 通过。
+> 现状基线：`npm test` **375/375 绿**，`node test/e2e.mjs` 40/40 绿，`node test/manifest-check.mjs` 通过。
 > 铁律：**每一步改完必须 `npm test` 全绿再往下**。红着不许继续。
 
 ---
 
 ## 0. 已完成的部分（不要重做）
 
-以下已落地并通过 **356 项**测试，**只读不改**：
+以下已落地并通过 **375 项**测试，**只读不改**：
 
 | 位置 | 内容 | 专用测试 |
 |---|---|---|
 | `src/ledger.js` | 新增 `NODE_KINDS`、`QUESTION_STATUS` 常量 | `trigger-kind.test.js` |
 | `src/ledger.js` | `EVENT_TYPES` 新增 6 种：`question.opened/touched/closed/abandoned`、`cycle.started/ended` | `trigger-kind.test.js` |
-| `src/ledger.js` | `createState()` 新增 `questions: Map`、`cycles: Map` | — （待任务 A/B 接入后补） |
+| `src/ledger.js` | `createState()` 新增 `questions: Map`、`cycles: Map` | `question.test.js`、`cycle.test.js` |
 | `src/ledger.js` | `node.created` 增加 `scope`、`trigger` 字段；kind 白名单改为从 `NODE_KINDS` 派生，未知 kind 写入 `problems` | `trigger-kind.test.js`（7 条） |
-| `src/ledger.js` | 6 种新事件的 fold 分支全部实现 | — （待任务 B 接入后补） |
+| `src/ledger.js` | 6 种新事件的 fold 分支全部实现 | `question.test.js`、`cycle.test.js`、`selfmodel.test.js` |
 | `src/ledger.js` | `activeAssertionAsOf` 改用统一 key builder（`setAssertionKeyImpl` 延迟绑定，避免循环依赖） | `bitemporal.test.js` |
 | `src/supersede.js` | `assertionKey` 支持第三维 `scope`；**scope 为空时 key 与旧格式逐字节相同** | `scope.test.js`（5 条） |
 | `src/supersede.js` | `classify` 取代目标改为取**最新**同键节点 | `scope.test.js`（3 条） |
 | `src/supersede.js` | `planWrite` 把 `scope` / `trigger` 写进 `node.created` | `scope.test.js`、`trigger-kind.test.js` |
-| `src/supersede.js` | `makeNodeId` 加 8 位随机后缀（唯一性优先于可复现性） | `concurrency.test.js`（3 条） |
+| `src/supersede.js` | `makeNodeId` 加 16 位随机后缀（64 位熵，避免万次批量生成的碰撞概率）（唯一性优先于可复现性） | `concurrency.test.js`（3 条） |
 | `src/store.js` | **账本锁**：`acquireLock` / `releaseLock` / `withLedgerLock`，`link()` 原子创建 + 僵尸锁回收 | `concurrency.test.js`（8 条） |
 | `src/index.js` | `atomically()` 助手：加锁 → 读账本 → 计划 → 提交，全部在锁内 | `concurrency.test.js` |
 | `src/index.js` | `createOperations.write` 把 `scope` / `trigger` 转发给 `planWrite`，并改走 `atomically` | `scope.test.js` |
@@ -99,13 +99,13 @@ node _obsidian-peek/verify-physics.mjs
 
 ### 歧义 3：§0 缺专用回归测试
 
-**已补齐**，见 §0 表格「专用测试」列。新增并发、scope、trigger 和物理回归测试；当前工作区总数为 356 条。
+**已补齐**，见 §0 表格「专用测试」列。新增并发、scope、trigger 和物理回归测试；当前工作区总数为 375 条。
 
 **同时立一条规矩**：§1 的每个任务完成后，必须**在同一次提交里**补该任务的专用测试。不接受「先实现、测试后补」——上面那两个 bug 就是「实现完看着对」的产物。
 
 ---
 
-## 1. 待执行的任务清单
+## 1. 任务清单（A–F 已完成）
 
 按顺序做，每步一个 commit。**每个任务必须连同它的专用测试一起提交。**
 
@@ -113,7 +113,7 @@ node _obsidian-peek/verify-physics.mjs
 
 已完成：`makeNodeId` 随机后缀、可恢复账本锁、`atomically()` 助手，以及 `connect` / `rule` / `persona` 的全部写路径接入。`test/concurrency.test.js` 覆盖 8 个进程并发建边。
 
-### 任务 A：`src/attention.js`（新建文件）
+### 任务 A（已完成）：`src/attention.js`（新建文件）
 
 未闭合问题的注意力压力算法。这是「驱动力」的数学定义。
 
@@ -179,7 +179,7 @@ export function focusFor(state, now, opts = {}) { ... }
 - `attempts` 缺失按 0；`confidence` 缺失按 0.2
 - 三个导出都要有 JSDoc
 
-### 任务 B：`src/index.js` — 操作层接入
+### 任务 B（已完成）：`src/index.js` — 操作层接入
 
 **B1. `write` 透传两个新参数**
 
@@ -235,7 +235,7 @@ export function focusFor(state, now, opts = {}) { ... }
 
 空账本必须返回 `0` 而不是 `NaN`。
 
-### 任务 C：`src/tools.js` — 三个新工具
+### 任务 C（已完成）：`src/tools.js` — 三个新工具
 
 **C1. `memory_question`**（对应 B2）
 
@@ -250,7 +250,7 @@ export function focusFor(state, now, opts = {}) { ... }
 
 **C5. 修改 `memory_connect`**：加 `action: 'link' | 'unlink'`，`unlink` 走 `edge.unlinked`；`type` 用 `enum: LINK_TYPES`（现在 `LINK_TYPES` 定义了却零引用，是死代码）。`supersedes` 必须从 `enum` 排除——它只能由引擎产生。
 
-### 任务 D：`src/index.js` — `buildIndexText` 注入改造
+### 任务 D（已完成）：`src/index.js` — `buildIndexText` 注入改造
 
 在现有注入文本**最前面**插入两段：
 
@@ -268,7 +268,7 @@ export function focusFor(state, now, opts = {}) { ... }
 
 **同时修一个既有缺陷**：现在 `rules` 循环没有 `maxEntries` 上限（实测 60 条规矩全部进注入，7006 字符）。规矩也要受 `maxIndexEntries` 约束。
 
-### 任务 E：`src/graph.js` — 图谱默认视图（**已降风险，见 §0.5 歧义 1**）
+### 任务 E（已完成）：`src/graph.js` — 图谱默认视图（**已降风险，见 §0.5 歧义 1**）
 
 现状：默认视图 `supersedes` 边 = 0 条（实测真实账本：默认 22 边 / 含退役 26 边）。整条「我怎么改的主意」默认看不见。
 
@@ -282,9 +282,9 @@ export function focusFor(state, now, opts = {}) { ... }
 
 理由：ghost 节点会污染节点集合，`radiusOf` / `kindStyle` / `nodeFill` / `hitTest` / `degree` 全要改，且 `client.test.js` 有多条测试假设「节点集合 == 真实记忆」。为一个默认视图的观感改动这些，风险与收益不匹配。
 
-测试：`test/graph.test.js` 加一条 —— 有退役节点时 `retiredCount > 0` 且 `nodes.length` 不变。
+测试已加入 `test/plugin.test.js`：有退役节点时 `retiredCount > 0` 且 `nodes.length` 不变。
 
-### 任务 F：`src/routes.js` — 新端点
+### 任务 F（已完成）：`src/routes.js` — 新端点
 
 加 `GET /plugins/dsh-ai-memory/questions`，返回 open 问题 + 压力值。安全校验沿用现有 `guarded()`（回环 + 同源），**不要新写一套**。
 
@@ -302,7 +302,7 @@ export function focusFor(state, now, opts = {}) { ... }
 | `test/cycle.test.js`（新） | ① `begin` 返回 focus，按压力降序<br>② `end` 的 `produced: 0` 成功<br>③ 无 open 问题时 focus 为空数组，`begin` 仍成功<br>④ `cycle.started` 的 `trigger: 'self'` 能正确 fold | 任务 B |
 | `test/selfmodel.test.js`（新） | ① 同 subject 被推翻 3/4 → `fragile` 里 rate=0.75<br>② 从未连 tensions 的判断进 `blind`<br>③ `selfRatio` / `selfSurvival` 算得对<br>④ 空账本返回 0 不是 NaN | 任务 B |
 | `test/plugin.test.js`（改） | ① `memory_connect` 的 `unlink` 真能删边<br>② `memory_connect` 的 `type: 'supersedes'` 被拒绝<br>③ `buildIndexText` 里规矩受 maxEntries 约束<br>④ 注入里有【你上次没想完的事】段，且只在有问题时出现 | 任务 C / D |
-| `test/graph.test.js`（改） | `retiredCount > 0` 且 `nodes.length` 不变 | 任务 E |
+| `test/plugin.test.js`（改） | `retiredCount > 0` 且 `nodes.length` 不变；questions 路由有压力值 | 任务 E / F |
 
 ### 已有覆盖（不要重复写）
 
@@ -354,7 +354,7 @@ export function focusFor(state, now, opts = {}) { ... }
 
 ### P0-2 kind 拼错静默降级 —— **已修**
 
-`ledger.js` 现在会对未知 kind push problem（`trigger-kind.test.js` 覆盖）。剩余：`tools.js` 的 `kind` 参数要加 `enum: ['judgment','rule','insight']`，归入任务 C。
+`ledger.js` 现在会对未知 kind push problem（`trigger-kind.test.js` 覆盖）。`tools.js` 的 `kind` 参数已加入 enum，并由任务 C 的测试覆盖。
 
 ---
 
@@ -362,7 +362,7 @@ export function focusFor(state, now, opts = {}) { ... }
 
 ```powershell
 cd dsh-plugins\plugins\dsh-ai-memory
-npm test                     # 全绿，且总数 > 356
+npm test                     # 全绿，且总数 > 375
 node test/e2e.mjs            # 40/40
 node test/manifest-check.mjs # passed
 node test/inline-worker.mjs  # 改过 worker 就必须跑

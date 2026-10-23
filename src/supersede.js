@@ -299,7 +299,7 @@ function activeNodesOf(state) {
 export function makeNodeId(at, seq) {
   const t = at.toString(36).slice(-6)
   const s = String(seq).padStart(4, '0')
-  // 8 hex chars = 32 bits of entropy: collisions between concurrently written
+  // 16 hex chars = 64 bits of entropy: collisions between concurrently written
   // nodes are not a practical concern, and the value stays short enough to read.
-  return `n_${s}_${t}${randomBytes(4).toString('hex')}`
+  return `n_${s}_${t}${randomBytes(8).toString('hex')}`
 }

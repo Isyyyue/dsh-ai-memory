@@ -280,6 +280,6 @@ describe('节点 id · 唯一性优先于可复现性', () => {
 
   test('id 仍然可读：n_<seq>_<时间前缀><随机后缀>', async () => {
     const { makeNodeId } = await import('../src/supersede.js')
-    assert.match(makeNodeId(1730000000000, 7), /^n_0007_[a-z0-9]{6}[0-9a-f]{8}$/)
+    assert.match(makeNodeId(1730000000000, 7), /^n_0007_[a-z0-9]{6}[0-9a-f]{16}$/)
   })
 })

@@ -185,6 +185,16 @@ describe('operations · search and connect', () => {
     assert.match(r.note, /找不到判断/)
   })
 
+  test('connect unlink removes an edge and supersedes is engine-only', () => {
+    const l = openLibrary(join(work, 'unlink'))
+    const ops = createOperations(l, { now: clock() })
+    const a = ops.write({ text: 'A' }); const b = ops.write({ text: 'B' })
+    assert.equal(ops.connect({ from: a.node_id, to: b.node_id, type: 'complements' }).ok, true)
+    assert.equal(ops.connect({ action: 'unlink', from: a.node_id, to: b.node_id, type: 'complements' }).ok, true)
+    assert.equal(l.load().state.edges.some((e) => e.type === 'complements'), false)
+    assert.equal(ops.connect({ from: a.node_id, to: b.node_id, type: 'supersedes' }).ok, false)
+  })
+
   test('a self-link is rejected', () => {
     const l = openLibrary(join(work, 'ops10'))
     const ops = createOperations(l, { now: clock() })
@@ -390,6 +400,15 @@ describe('index text · injected at session start', () => {
     assert.match(text, /此处列前 3 条/)
   })
 
+  test('rules also respect maxEntries instead of flooding injection', () => {
+    const l = openLibrary(join(work, 'idx-rules-limit'))
+    const ops = createOperations(l, { now: clock() })
+    for (let i = 0; i < 60; i += 1) ops.rule({ action: 'amend', id: 'rule-' + i, text: 'RULE_LIMIT_' + i, reason: 'created' })
+    const text = buildIndexText(l, 3)
+    const shown = (text.match(/RULE_LIMIT_/g) ?? []).length
+    assert.equal(shown, 3)
+  })
+
   test('the injected index exposes unconnected judgments and a concrete write trigger', () => {
     const l = openLibrary(join(work, 'idx8'))
     const ops = createOperations(l, { now: clock() })
@@ -523,6 +542,15 @@ describe('graph · snapshot (a navigation layer, no full text)', () => {
     assert.equal(snap.edges.length, 0, 'an edge with a truncated endpoint must not remain')
   })
 
+  test('snapshot reports retiredCount without changing default node filtering', () => {
+    const l = openLibrary(join(work, 'g-retired-count'))
+    const ops = createOperations(l, { now: clock() })
+    ops.write({ text: 'old', subject: 's', relation: 'r', object: '1' })
+    ops.write({ text: 'new', subject: 's', relation: 'r', object: '2' })
+    const snap = buildSnapshot(l.load().state)
+    assert.equal(snap.nodes.length, 1); assert.equal(snap.retiredCount, 1)
+  })
+
   test('countStats counts correctly', () => {
     const l = openLibrary(join(work, 'g5'))
     const ops = createOperations(l, { now: clock() })
@@ -619,6 +647,21 @@ describe('routes · security (/plugins/* does not pass session cookie validation
     assert.equal(body.nodes.length, 1)
   })
 
+  test('/questions returns open questions with pressure and keeps route security', () => {
+    const l = openLibrary(join(work, 'rq'))
+    const ops = createOperations(l, { now: clock() })
+    const opened = ops.question({ action: 'open', text: '待验证问题', urgency: 1, confidence: 0 })
+    const routes = createRoutes(l)
+    const res = fakeRes()
+    byPath(routes, `${ROUTE_BASE}/questions`).handler(
+      { url: `${ROUTE_BASE}/questions`, socket: { remoteAddress: '127.0.0.1' }, headers: { host: '127.0.0.1:19387' } },
+      res,
+    )
+    const body = JSON.parse(res.body)
+    assert.equal(res.statusCode, 200); assert.equal(body.ok, true)
+    assert.equal(body.questions[0].id, opened.id); assert.ok(body.questions[0].pressure > 0)
+  })
+
   test('a missing Origin header is treated as same-origin (curl / local probing)', () => {
     const l = openLibrary(join(work, 'r4'))
     const routes = createRoutes(l)
@@ -630,9 +673,9 @@ describe('routes · security (/plugins/* does not pass session cookie validation
     assert.equal(res.statusCode, 200)
   })
 
-  test('all three data routes (the worker goes through DSH\'s own chunk route) carry the /plugins/dsh-ai-memory prefix', () => {
+  test('all four data routes (the worker goes through DSH\'s own chunk route) carry the /plugins/dsh-ai-memory prefix', () => {
     const routes = createRoutes(openLibrary(join(work, 'r5')))
-    assert.equal(routes.length, 3)
+    assert.equal(routes.length, 4)
     for (const r of routes) {
       assert.ok(r.path.startsWith(ROUTE_BASE), `${r.path} must start with ${ROUTE_BASE}`)
       assert.equal(r.kind, 'exact')
@@ -684,7 +727,7 @@ describe('routes · the worker goes through DSH\'s own chunk route (no route of 
     const routes = createRoutes(openLibrary(join(work, 'w1')))
     const paths = routes.map((r) => r.path)
     assert.ok(!paths.some((p) => p.includes('graph-worker')), `there should be no worker route; actual: ${paths.join(', ')}`)
-    assert.equal(routes.length, 3, 'only three data endpoints remain')
+    assert.equal(routes.length, 4, 'four data endpoints include questions')
   })
 
   test('the worker source contains a force-directed implementation and physics constants', () => {

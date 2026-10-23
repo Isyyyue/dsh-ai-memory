@@ -42,9 +42,16 @@ describe('trigger · 谁发起了这个想法', () => {
   test('显式 self 会被记录', () => {
     withLibrary(({ lib, ops }) => {
       const r = ops.write({
-        text: '我自己想到的', subject: 'a', relation: 'b', object: '2', trigger: 'self',
+        text: '我自己想到的', kind: 'insight', subject: 'a', relation: 'b', object: '2', trigger: 'self', citations: [process.execPath],
       })
       assert.equal(lib.load().state.nodes.get(r.node_id).trigger, 'self')
+    })
+  })
+
+  test('self 只能写 insight，不能写 judgment 或 rule', () => {
+    withLibrary(({ ops }) => {
+      assert.equal(ops.write({ text: 'bad rule', kind: 'rule', trigger: 'self', citations: [process.execPath] }).action, 'rejected')
+      assert.equal(ops.write({ text: 'bad judgment', trigger: 'self', citations: [process.execPath] }).action, 'rejected')
     })
   })
 
@@ -68,7 +75,7 @@ describe('trigger · 谁发起了这个想法', () => {
 
   test('trigger 落进账本事件里（不只活在内存状态中）', () => {
     withLibrary(({ lib, ops }) => {
-      ops.write({ text: 'x', subject: 'a', relation: 'b', object: '5', trigger: 'self' })
+      ops.write({ text: 'x', kind: 'insight', subject: 'a', relation: 'b', object: '5', trigger: 'self', citations: [process.execPath] })
       const created = lib.load().events.filter((e) => e.type === 'node.created').pop()
       assert.equal(created.data.trigger, 'self')
     })
@@ -79,7 +86,7 @@ describe('trigger · 谁发起了这个想法', () => {
     withLibrary(({ lib, ops }) => {
       ops.write({ text: 'u1', subject: 'a', relation: 'r1', object: '1' })
       ops.write({ text: 'u2', subject: 'a', relation: 'r2', object: '2' })
-      ops.write({ text: 's1', subject: 'a', relation: 'r3', object: '3', trigger: 'self' })
+      ops.write({ text: 's1', kind: 'insight', subject: 'a', relation: 'r3', object: '3', trigger: 'self', citations: [process.execPath] })
       const all = [...lib.load().state.nodes.values()]
       const selfCount = all.filter((n) => n.trigger === 'self').length
       assert.equal(selfCount, 1)
