@@ -28,6 +28,12 @@
  *   persona.accepted  a candidate is confirmed as part of the personality
  *   persona.rejected  a candidate is explicitly declined
  *   persona.revised   a confirmed trait is refined with a reason
+ *   question.opened   something it has not finished thinking about
+ *   question.touched  it thought about that question again
+ *   question.closed   resolved (optionally naming the judgment that resolved it)
+ *   question.abandoned deliberately dropped, kept for the record
+ *   cycle.started     a thinking cycle began; `trigger: 'self'` = no user present
+ *   cycle.ended       it finished, including when it produced nothing
  */
 
 /** Event types the ledger recognizes. Unknown types are recorded as a problem, never silently swallowed. */
@@ -43,6 +49,20 @@ export const EVENT_TYPES = Object.freeze([
   'persona.accepted',
   'persona.rejected',
   'persona.revised',
+  // --- Open questions: what it has not finished thinking about. ---
+  // These are what make the system driven rather than merely stored: a
+  // judgment records a conclusion, a question records an obligation to keep
+  // thinking. Without them nothing starts a cycle when no user is present.
+  'question.opened',
+  'question.touched',
+  'question.closed',
+  'question.abandoned',
+  // --- Thinking cycles: proof that thinking happened, including when it
+  // produced nothing. "Thought and had nothing to say" must be a first-class
+  // outcome; a system that must emit something every turn is answering, not
+  // thinking.
+  'cycle.started',
+  'cycle.ended',
 ])
 
 /** Node status. Only active nodes take part in search and injection. */
@@ -75,6 +95,37 @@ export const KIND = Object.freeze({
 })
 
 /**
+ * Node kinds a `node.created` event may carry.
+ *
+ * ⚠️ This set and the KIND enum must never drift apart again. They did once:
+ * `supersede.js` validated against `Object.values(KIND)` (which includes
+ * `persona`) while `applyEvent` accepted only rule/insight, so
+ * `memory_write({kind:'persona'})` stored `persona` in the ledger and folded
+ * it back as `judgment` — with no problem recorded. The same class of bug had
+ * already been fixed once for `insight` (see supersede.js), which is why this
+ * is now derived from one place.
+ *
+ * `persona` is deliberately NOT a node kind: personality lives in the separate
+ * `state.persona` map, where accept/reject/revise are governed. Letting a
+ * plain node claim kind=persona would create a second, ungoverned path to a
+ * personality change.
+ */
+export const NODE_KINDS = Object.freeze([KIND.JUDGMENT, KIND.RULE, KIND.INSIGHT])
+
+/**
+ * Status of an open question.
+ *
+ * `open`      still owed a thought; counts toward attention pressure
+ * `closed`    resolved, with the resolving judgment recorded
+ * `abandoned` deliberately dropped; kept for the record, not counted
+ */
+export const QUESTION_STATUS = Object.freeze({
+  OPEN: 'open',
+  CLOSED: 'closed',
+  ABANDONED: 'abandoned',
+})
+
+/**
  * Create an empty state.
  * @returns {object} State object that applyEvent updates in place.
  */
@@ -84,6 +135,11 @@ export function createState() {
     nodes: new Map(),
     edges: [],
     persona: new Map(),
+    // Open questions: what it has not finished thinking about. This is the
+    // drive; without it the system only reacts to whoever speaks last.
+    questions: new Map(),
+    // Completed thinking cycles, keyed by cycleId. Empty output is recorded.
+    cycles: new Map(),
     problems: [],
   }
 }
@@ -118,14 +174,34 @@ export function applyEvent(state, ev) {
         state.problems.push({ at: 'fold', reason: `节点 id 重复：${id}`, seq: ev.seq })
         break
       }
+      // ⚠️ Derived from NODE_KINDS, never hand-written here. A hand-written
+      // list is how `persona` once slipped through as `judgment` in silence.
+      const kind = NODE_KINDS.includes(d.kind) ? d.kind : KIND.JUDGMENT
+      if (typeof d.kind === 'string' && d.kind !== '' && !NODE_KINDS.includes(d.kind)) {
+        // An unrecognized kind is still downgraded (never lose the record), but
+        // it is no longer silent: a typo like `insite` must be visible.
+        state.problems.push({ at: 'fold', reason: `未知节点类型 ${d.kind}，已按 judgment 存：${id}`, seq: ev.seq })
+      }
       state.nodes.set(id, {
         id,
-        kind: d.kind === KIND.RULE || d.kind === KIND.INSIGHT ? d.kind : KIND.JUDGMENT,
+        kind,
         text: typeof d.text === 'string' ? d.text : '',
         // Triple used for deterministic supersession. If any component is missing, the node takes part in search only, never in supersession.
         subject: typeof d.subject === 'string' && d.subject !== '' ? d.subject : null,
         relation: typeof d.relation === 'string' && d.relation !== '' ? d.relation : null,
         object: typeof d.object === 'string' && d.object !== '' ? d.object : null,
+        /**
+         * Scope is the third dimension of the assertion key.
+         *
+         * Without it, `(subject, relation)` admits exactly one live answer, so
+         * "dev runs on 8000" and "prod runs on 8080" get collapsed into a
+         * supersession — the ledger then records a change of mind that never
+         * happened. With it, both stay active and neither overturns the other.
+         *
+         * Absent or empty means the global scope, so every pre-existing ledger
+         * keeps its exact current behaviour.
+         */
+        scope: typeof d.scope === 'string' ? d.scope : '',
         tags: Array.isArray(d.tags) ? d.tags.filter((t) => typeof t === 'string') : [],
         citations: Array.isArray(d.citations) ? d.citations.filter((c) => typeof c === 'string') : [],
         createdAt: at,
@@ -135,6 +211,17 @@ export function applyEvent(state, ev) {
         supersededBy: null,
         status: STATUS.ACTIVE,
         revision: 1,
+        /**
+         * Who started this thought.
+         *
+         *   'user'     the user said or corrected something
+         *   'evidence' a newly observed fact pushed it
+         *   'self'     it came up on its own, with no one in the room
+         *
+         * This is the only field that makes "it is evolving" checkable rather
+         * than felt: count the `self` judgments and see how many survived.
+         */
+        trigger: d.trigger === 'self' || d.trigger === 'evidence' ? d.trigger : 'user',
         history: [{ at, text: typeof d.text === 'string' ? d.text : '', reason: '建立' }],
       })
       break
@@ -151,6 +238,7 @@ export function applyEvent(state, ev) {
       if (typeof d.subject === 'string' && d.subject !== '') n.subject = d.subject
       if (typeof d.relation === 'string' && d.relation !== '') n.relation = d.relation
       if (typeof d.object === 'string' && d.object !== '') n.object = d.object
+      if (typeof d.scope === 'string') n.scope = d.scope
       n.revision += 1
       n.history.push({ at, text: n.text, before, reason: typeof d.reason === 'string' ? d.reason : '修订' })
       break
@@ -293,6 +381,101 @@ export function applyEvent(state, ev) {
       break
     }
 
+    case 'question.opened': {
+      const id = typeof d.id === 'string' && d.id !== '' ? d.id : `q_${String(ev.seq ?? 0).padStart(4, '0')}`
+      if (state.questions.has(id)) {
+        state.problems.push({ at: 'fold', reason: `问题 id 重复：${id}`, seq: ev.seq })
+        break
+      }
+      const urgency = Number(d.urgency)
+      const confidence = Number(d.confidence)
+      state.questions.set(id, {
+        id,
+        text: typeof d.text === 'string' ? d.text : '',
+        status: QUESTION_STATUS.OPEN,
+        // How much this matters to it. Self-assessed, so it is a judgment too —
+        // but one about attention, not about the world.
+        urgency: Number.isFinite(urgency) ? Math.max(0, Math.min(1, urgency)) : 0.5,
+        // How settled it feels. The gap (1 - confidence) is what keeps pulling.
+        confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0.2,
+        // Attempts are counted so that thinking about something ten times
+        // without progress decays its priority. Without this the system can
+        // loop on one question forever and burn every cycle on it.
+        attempts: 0,
+        sourceIds: Array.isArray(d.sourceIds) ? d.sourceIds.filter((x) => typeof x === 'string') : [],
+        openedAt: at,
+        lastTouchedAt: at,
+        closedAt: null,
+        resolvedBy: null,
+        history: [{ at, action: 'opened', note: typeof d.reason === 'string' ? d.reason : '' }],
+      })
+      break
+    }
+
+    case 'question.touched': {
+      const q = state.questions.get(d.id)
+      if (q === undefined) {
+        state.problems.push({ at: 'fold', reason: `思考记录指向不存在的问题：${String(d.id)}`, seq: ev.seq })
+        break
+      }
+      q.attempts += 1
+      q.lastTouchedAt = at
+      if (Number.isFinite(Number(d.confidence))) q.confidence = Math.max(0, Math.min(1, Number(d.confidence)))
+      if (Number.isFinite(Number(d.urgency))) q.urgency = Math.max(0, Math.min(1, Number(d.urgency)))
+      q.history.push({ at, action: 'touched', note: typeof d.note === 'string' ? d.note : '' })
+      break
+    }
+
+    case 'question.closed':
+    case 'question.abandoned': {
+      const q = state.questions.get(d.id)
+      if (q === undefined) {
+        state.problems.push({ at: 'fold', reason: `关闭指向不存在的问题：${String(d.id)}`, seq: ev.seq })
+        break
+      }
+      q.status = ev.type === 'question.closed' ? QUESTION_STATUS.CLOSED : QUESTION_STATUS.ABANDONED
+      q.closedAt = at
+      q.resolvedBy = typeof d.resolvedBy === 'string' && d.resolvedBy !== '' ? d.resolvedBy : null
+      q.history.push({
+        at,
+        action: ev.type === 'question.closed' ? 'closed' : 'abandoned',
+        note: typeof d.note === 'string' ? d.note : '',
+      })
+      break
+    }
+
+    case 'cycle.started': {
+      const id = typeof d.id === 'string' && d.id !== '' ? d.id : `c_${String(ev.seq ?? 0).padStart(4, '0')}`
+      if (state.cycles.has(id)) {
+        state.problems.push({ at: 'fold', reason: `周期 id 重复：${id}`, seq: ev.seq })
+        break
+      }
+      state.cycles.set(id, {
+        id,
+        startedAt: at,
+        endedAt: null,
+        // 'self' means no user was present. This is the field that answers
+        // "did it think on its own", so it is recorded, never inferred.
+        trigger: d.trigger === 'self' ? 'self' : 'user',
+        focus: Array.isArray(d.focus) ? d.focus.filter((x) => typeof x === 'string') : [],
+        produced: null,
+        note: '',
+      })
+      break
+    }
+
+    case 'cycle.ended': {
+      const c = state.cycles.get(d.id)
+      if (c === undefined) {
+        state.problems.push({ at: 'fold', reason: `结束指向不存在的周期：${String(d.id)}`, seq: ev.seq })
+        break
+      }
+      c.endedAt = at
+      c.produced = Number.isFinite(Number(d.produced)) ? Number(d.produced) : 0
+      c.note = typeof d.note === 'string' ? d.note : ''
+      break
+    }
+
     default:
       break
   }
@@ -392,12 +575,46 @@ export function foldAsOf(events, at) {
  */
 export function activeAssertionAsOf(events, at, key) {
   const state = foldAsOf(events, at)
+  // Compare with the same key builder the write path uses, so a scoped
+  // assertion and its global counterpart cannot be confused: a query for the
+  // global key must not match a node that carries a scope.
+  const { assertionKey } = assertionKeyOf()
   for (const n of state.nodes.values()) {
     if (n.status !== STATUS.ACTIVE) continue
-    const s = typeof n.subject === 'string' ? n.subject : ''
-    const r = typeof n.relation === 'string' ? n.relation : ''
-    if (s === '' || r === '') continue
-    if (`${s}\u0000${r}` === key) return n
+    if (assertionKey(n) !== key) continue
+    return n
   }
   return undefined
+}
+
+/**
+ * Late-bound access to supersede.js's key builder.
+ *
+ * `ledger.js` must not import `supersede.js`: supersede imports KIND and
+ * NODE_KINDS from ledger, and a static cycle between the two would make module
+ * initialization order decide whether those constants exist yet. The lookup is
+ * resolved lazily at call time instead, which keeps the dependency one-way.
+ *
+ * @returns {{assertionKey: (node: object) => string|null}} The key builder.
+ */
+function assertionKeyOf() {
+  return { assertionKey: assertionKeyImpl }
+}
+
+/** Assigned once supersede.js loads; see assertionKeyOf(). */
+let assertionKeyImpl = (node) => {
+  const s = typeof node?.subject === 'string' ? node.subject.trim().toLowerCase() : ''
+  const r = typeof node?.relation === 'string' ? node.relation.trim().toLowerCase() : ''
+  if (s === '' || r === '') return null
+  const sc = typeof node?.scope === 'string' ? node.scope.trim().toLowerCase() : ''
+  return sc === '' ? `${s}\u0000${r}` : `${s}\u0000${r}\u0000${sc}`
+}
+
+/**
+ * Let supersede.js install its own key builder, so both modules agree exactly.
+ * @param {(node: object) => string|null} fn - The authoritative builder.
+ * @returns {void}
+ */
+export function setAssertionKeyImpl(fn) {
+  assertionKeyImpl = fn
 }

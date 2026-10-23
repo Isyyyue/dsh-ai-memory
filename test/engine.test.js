@@ -342,12 +342,38 @@ describe('supersede · planWrite 产生的事件', () => {
 })
 
 describe('supersede · id 生成', () => {
-  test('同一时刻同一序号 → 可复现', () => {
-    assert.equal(makeNodeId(1000, 7), makeNodeId(1000, 7))
+  /**
+   * ⚠️ This block used to assert the **opposite**: that the same `(at, seq)`
+   * produced the same id. That was a deliberate design choice ("ids are
+   * reproducible for tests") and it was wrong, in a way only concurrency
+   * exposed.
+   *
+   * Two processes that read the same `state.seq` compute the same `seq + 1`,
+   * and if their clocks land in the same millisecond the timestamp suffix
+   * matches too — so both emit a byte-identical id and `applyEvent` drops the
+   * second `node.created` as a duplicate. Measured: 8 processes × 5 writes left
+   * 40 ledger lines but only **29 folded nodes**.
+   *
+   * Uniqueness is now the requirement; reproducibility is not. Tests that need
+   * a fixed id already pass one in explicitly (see planWrite's `newId`).
+   */
+  test('**同一时刻同一序号 → 不同 id**（唯一性优先于可复现性）', () => {
+    assert.notEqual(makeNodeId(1000, 7), makeNodeId(1000, 7), '并发写不能撞 id')
   })
 
   test('不同序号 → 不同 id', () => {
     assert.notEqual(makeNodeId(1000, 7), makeNodeId(1000, 8))
+  })
+
+  test('批量生成 10000 个不重复（无实际碰撞风险）', () => {
+    const ids = new Set()
+    for (let i = 0; i < 10000; i += 1) ids.add(makeNodeId(1000, 7))
+    assert.equal(ids.size, 10000)
+  })
+
+  test('id 形状保持可读：n_<seq>_<时间前缀><随机后缀>', () => {
+    const id = makeNodeId(1730000000000, 7)
+    assert.match(id, /^n_0007_[a-z0-9]{6}[0-9a-f]{8}$/)
   })
 })
 

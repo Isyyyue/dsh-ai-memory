@@ -30,18 +30,27 @@
  *     axis, never merge distinct facts.
  */
 
-import { KIND } from './ledger.js'
+import { randomBytes } from 'node:crypto'
+
+import { KIND, NODE_KINDS, setAssertionKeyImpl } from './ledger.js'
 
 /**
- * Whitelist of valid kinds.
+ * Whitelist of node kinds that a `node.created` may carry.
  *
- * ⚠️ This used to be hardcoded as `input.kind === 'rule' ? 'rule' : 'judgment'`,
- * so adding `insight` silently downgraded it to judgment: no error, just a lost
- * kind, and supersession then compared it as a judgment. With a whitelist,
- * adding a kind means adding one entry here — and since it derives from the KIND
- * enum directly, it can never fall behind again.
+ * ⚠️ Two separate silent-failure bugs lived here, both of the same shape:
+ *
+ *   1. It used to be `input.kind === 'rule' ? 'rule' : 'judgment'`, so adding
+ *      `insight` silently downgraded it to judgment — no error, just a lost
+ *      kind, and supersession then compared it as a judgment.
+ *   2. It was then widened to `Object.values(KIND)`, which *includes*
+ *      `persona`, while `ledger.js` still accepted only rule/insight. So
+ *      `memory_write({kind:'persona'})` wrote `persona` into the ledger and
+ *      folded it back as `judgment`, silently.
+ *
+ * It now derives from NODE_KINDS, the one list `ledger.js` also uses to fold.
+ * The two can no longer disagree.
  */
-const VALID_KINDS = new Set(Object.values(KIND))
+const VALID_KINDS = new Set(NODE_KINDS)
 
 /**
  * Normalize one triple component for deterministic comparison.
@@ -63,17 +72,44 @@ export function normalizeComponent(v) {
 }
 
 /**
- * Build the (subject, relation) key. Supersession compares this key plus object.
+ * Build the assertion key: (subject, relation, scope).
  *
- * @param {{subject?: unknown, relation?: unknown}} node - Node carrying a triple.
- * @returns {string|null} Key; null when either component is missing (= no supersession).
+ * ## Why scope is part of the key
+ *
+ * With only `(subject, relation)`, exactly one answer can be live at a time. So
+ * these two judgments — both true, in different contexts — were collapsed into
+ * a supersession, and the ledger recorded a change of mind that never happened:
+ *
+ *     (svc, port, dev)  = 8000
+ *     (svc, port, prod) = 8080   ← was treated as "I changed my mind"
+ *
+ * Making scope a dimension of the key fixes that structurally: same
+ * subject/relation but a different scope is a *different assertion*, so both
+ * stay active and neither overturns the other.
+ *
+ * Scope is optional. An absent or empty scope is the global scope, which is
+ * exactly what every pre-existing ledger line means — so old data keeps its
+ * current behaviour and no migration is needed.
+ *
+ * @param {{subject?: unknown, relation?: unknown, scope?: unknown}} node - Node carrying a triple.
+ * @returns {string|null} Key; null when subject or relation is missing (= no supersession).
  */
 export function assertionKey(node) {
   const s = normalizeComponent(node?.subject)
   const r = normalizeComponent(node?.relation)
   if (s === '' || r === '') return null
-  return `${s}\u0000${r}`
+  const sc = normalizeComponent(node?.scope)
+  // ⚠️ The third segment is appended only when a scope is present, so a global
+  // assertion key stays byte-identical to what older ledgers and callers
+  // already hold. Adding a trailing separator unconditionally would silently
+  // invalidate every key passed in from outside (activeAssertionAsOf).
+  return sc === '' ? `${s}\u0000${r}` : `${s}\u0000${r}\u0000${sc}`
 }
+
+// Install this builder as the one ledger.js uses for as-of assertions, so the
+// two modules can never disagree about what counts as the same key. See
+// assertionKeyOf() in ledger.js for why this is late-bound rather than imported.
+setAssertionKeyImpl(assertionKey)
 
 /**
  * Classify the relation between an incoming judgment and existing judgments.
@@ -84,7 +120,7 @@ export function assertionKey(node) {
  *   'novel'       no matching key: a new fact
  *   'unkeyed'     triple incomplete: cannot take part in supersession, stored as a plain node
  *
- * @param {object} incoming - New judgment (needs subject/relation/object).
+ * @param {object} incoming - New judgment (needs subject/relation/object, optionally scope).
  * @param {object[]} active - Currently active nodes.
  * @returns {{relation: string, target?: object}} Verdict and the existing node it matched.
  */
@@ -94,13 +130,25 @@ export function classify(incoming, active) {
 
   const obj = normalizeComponent(incoming.object)
   if (obj === '') return { relation: 'unkeyed' }
+  /**
+   * Pick the **newest** same-key node as the supersession target, not the first
+   * one encountered.
+   *
+   * A Map iterates in insertion order, so the original `sameKey = n` kept
+   * overwriting nothing and returned the *oldest* match. Measured: with two
+   * live same-key judgments (one from an insight that never takes part in
+   * supersession, one a judgment), writing a third superseded the oldest
+   * judgment rather than the most recent position it was actually replacing.
+   * The newest node is the position currently held; that is the one being
+   * contradicted.
+   */
   let sameKey = null
   for (const n of active) {
     if (normalizeComponent(n.object) === '') continue
     if (assertionKey(n) !== key) continue
     // Same complete key and object means a restatement.
     if (normalizeComponent(n.object) === obj) return { relation: 'duplicate', target: n }
-    sameKey = n
+    if (sameKey === null || (Number(n.createdAt) || 0) >= (Number(sameKey.createdAt) || 0)) sameKey = n
   }
   if (sameKey !== null) return { relation: 'supersede', target: sameKey }
   return { relation: 'novel' }
@@ -158,6 +206,18 @@ export function planWrite(state, input, ctx) {
       subject: input.subject ?? null,
       relation: input.relation ?? null,
       object: input.object ?? null,
+      // The third dimension of the assertion key must travel with the event,
+      // otherwise `assertionKey` has nothing to read back when the ledger is
+      // folded and every scoped assertion collapses into the global one.
+      //
+      // ⚠️ Written as an empty string rather than `undefined`: JSON.stringify
+      // drops undefined members, so the field would vanish from the ledger line
+      // entirely and a hand-editing reader could not tell "no scope" from
+      // "field forgotten".
+      scope: typeof input.scope === 'string' ? input.scope : '',
+      // Who started this thought. Recorded, never inferred, because it is the
+      // only field that makes "it is evolving on its own" checkable later.
+      trigger: input.trigger === 'self' || input.trigger === 'evidence' ? input.trigger : 'user',
       tags: input.tags ?? [],
       citations: input.citations ?? [],
     },
@@ -214,16 +274,32 @@ function activeNodesOf(state) {
 /**
  * Generate a stable node id.
  *
- * Deliberately free of randomness beyond the timestamp: the same content yields
- * different ids at different times (they are two distinct judgments), while ids
- * generated at one moment are reproducible for tests.
+ * ⚠️ The suffix **must** be random, and this was measured, not assumed:
+ *
+ * The previous form was `n_<seq>_<last 6 base36 chars of the timestamp>`.
+ * Two processes that read the same `state.seq` compute the same `seq + 1`,
+ * and if their clocks land in the same millisecond they also compute the same
+ * timestamp suffix — so both produce a byte-identical id. `applyEvent` then
+ * treats the second `node.created` as a duplicate and drops it.
+ *
+ * Measured: 8 processes × 5 writes produced 40 ledger lines but only **29
+ * folded nodes** — 11 judgments existed in the file and were invisible to
+ * search and injection, with a single "节点 id 重复" problem as the only trace.
+ *
+ * The truncation also collided on its own: `36^6 = 2176782336 ms ≈ 25.19 days`,
+ * so the same `seq` produced the same id again three and a half weeks later.
+ *
+ * The timestamp prefix is kept because it makes ids human-scannable in the
+ * ledger; it is no longer load-bearing for uniqueness.
  *
  * @param {number} at - Millisecond timestamp.
  * @param {number} seq - Sequence number.
- * @returns {string} An id shaped like `n_0007_1a2b3c`.
+ * @returns {string} An id shaped like `n_0007_1a2b3c4d`.
  */
 export function makeNodeId(at, seq) {
   const t = at.toString(36).slice(-6)
   const s = String(seq).padStart(4, '0')
-  return `n_${s}_${t}`
+  // 8 hex chars = 32 bits of entropy: collisions between concurrently written
+  // nodes are not a practical concern, and the value stays short enough to read.
+  return `n_${s}_${t}${randomBytes(4).toString('hex')}`
 }

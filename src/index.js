@@ -28,7 +28,7 @@ import { homedir } from 'node:os'
 
 import { foldEvents, foldAsOf, activeNodes, nodeOf, backlinksOf, outlinksOf, supersedeChain, KIND, STATUS } from './ledger.js'
 import { planWrite, makeNodeId } from './supersede.js'
-import { readLedger, appendEvents } from './store.js'
+import { readLedger, appendEvents, withLedgerLock } from './store.js'
 import { search as searchNodes, summarize } from './query.js'
 import { buildTools } from './tools.js'
 import { createRoutes } from './routes.js'
@@ -158,6 +158,45 @@ export function openLibrary(dir) {
 export function createOperations(lib, opts = {}) {
   const now = opts.now ?? (() => Date.now())
 
+  /**
+   * Run a read-decide-append sequence as one atomic step.
+   *
+   * ⚠️ Every mutation goes through here, and the reason is a measured bug, not
+   * tidiness. The pattern this replaces was:
+   *
+   *     const { state } = lib.load()        // ← read outside any lock
+   *     const events = plan(state, ...)     // ← plan against that snapshot
+   *     lib.commit(events)                  // ← append
+   *
+   * With two processes, both read the same `state.seq`, both plan `seq = N+1`,
+   * and both append. Unique node ids keep both nodes alive, but the **order**
+   * is now ambiguous: `foldEvents` sorts by `seq`, and `supersedeChain` walks
+   * supersession links in that order, so two concurrent supersessions of the
+   * same assertion can fold into a chain that reflects neither writer.
+   *
+   * Taking the lock **before** the read is what makes seq order equal commit
+   * order. Doing it after the read would only protect the append itself, which
+   * was never the vulnerable part.
+   *
+   * @param {(state: object) => {events: object[], result: any} | {error: string}} plan - Planner.
+   * @returns {any} The planner's result, or `{ ok: false, note }` on lock/write failure.
+   */
+  const atomically = (plan) => {
+    const locked = withLedgerLock(lib.ledgerPath, () => {
+      const { state } = lib.load()
+      const planned = plan(state)
+      if (planned.error !== undefined) return { error: planned.error }
+      if (planned.events.length > 0) {
+        const res = lib.commit(planned.events)
+        if (!res.ok) return { error: `写盘失败：${res.reason}` }
+      }
+      return { result: planned.result }
+    })
+    if (!locked.ok) return { error: locked.reason }
+    if (locked.value.error !== undefined) return { error: locked.value.error }
+    return { result: locked.value.result }
+  }
+
   const search = (args) => {
     const { state } = lib.load()
     const personaNodes = [...state.persona.values()]
@@ -193,30 +232,51 @@ export function createOperations(lib, opts = {}) {
   const write = (args) => {
     const text = String(args?.text ?? '').trim()
     if (text === '') return { action: 'rejected', note: '判断不能为空。' }
-    const { state } = lib.load()
-    const at = now()
-    const newId = makeNodeId(at, state.seq + 1)
-    const { events, outcome } = planWrite(
-      state,
-      {
-        text,
-        subject: args?.subject,
-        relation: args?.relation,
-        object: args?.object,
-        // Three node kinds: judgment (default) / rule (governed) / insight (not superseded).
-        kind: args?.kind === KIND.RULE ? KIND.RULE
-          : args?.kind === KIND.INSIGHT ? KIND.INSIGHT
-            : KIND.JUDGMENT,
-        tags: Array.isArray(args?.tags) ? args.tags : [],
-        citations: Array.isArray(args?.citations) ? args.citations : [],
-        reason: args?.reason,
-      },
-      { at, nextSeq: state.seq, newId },
-    )
-    if (events.length > 0) {
-      const res = lib.commit(events)
-      if (!res.ok) return { action: 'failed', note: `写盘失败：${res.reason}` }
-    }
+
+    // The read-plan-append sequence runs under the ledger lock; see atomically()
+    // for why the load must happen *inside* it.
+    const planned = atomically((state) => {
+      const at = now()
+      const newId = makeNodeId(at, state.seq + 1)
+      const { events, outcome } = planWrite(
+        state,
+        {
+          text,
+          subject: args?.subject,
+          relation: args?.relation,
+          object: args?.object,
+          /**
+           * Scope is the third dimension of the assertion key.
+           *
+           * ⚠️ This must be forwarded explicitly. `planWrite` reads
+           * `input.scope`, and a missing field is not an error — it silently
+           * means "global", so every scoped assertion would be compared as if
+           * it were global and the whole point of the dimension (dev and prod
+           * coexisting) would quietly not work. Passing `undefined` through
+           * also lets `planWrite` apply its own default of `''`.
+           */
+          scope: typeof args?.scope === 'string' ? args.scope : '',
+          /**
+           * Who started this thought: 'user' (default) | 'evidence' | 'self'.
+           * See the guardrails in UPGRADE-SPEC.md — a `self` write may not
+           * create a `judgment`, and must carry citations.
+           */
+          trigger: args?.trigger,
+          // Three node kinds: judgment (default) / rule (governed) / insight (not superseded).
+          kind: args?.kind === KIND.RULE ? KIND.RULE
+            : args?.kind === KIND.INSIGHT ? KIND.INSIGHT
+              : KIND.JUDGMENT,
+          tags: Array.isArray(args?.tags) ? args.tags : [],
+          citations: Array.isArray(args?.citations) ? args.citations : [],
+          reason: args?.reason,
+        },
+        { at, nextSeq: state.seq, newId },
+      )
+      return { events, result: outcome }
+    })
+
+    if (planned.error !== undefined) return { action: 'failed', note: planned.error }
+    const outcome = planned.result
 
     // Suggest related active judgments without creating a semantic link
     // automatically. The relation type still requires the model's judgment.
@@ -247,13 +307,17 @@ export function createOperations(lib, opts = {}) {
     const type = String(args?.type ?? 'complements')
     if (from === '' || to === '') return { ok: false, note: 'from 与 to 都必填。' }
     if (from === to) return { ok: false, note: '不能自连。' }
-    const { state } = lib.load()
-    if (!state.nodes.has(from)) return { ok: false, note: `找不到判断 ${from}。先 memory_search 确认 id。` }
-    if (!state.nodes.has(to)) return { ok: false, note: `找不到判断 ${to}。先 memory_search 确认 id。` }
-    const at = now()
-    const res = lib.commit([{ seq: state.seq + 1, at, type: 'edge.linked', data: { from, to, type, note: String(args?.note ?? '') } }])
-    if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
-    return { ok: true, note: `已在 ${from} 与 ${to} 之间建立 ${type} 关系（两边都会看到，不留单向边）。` }
+    const planned = atomically((state) => {
+      if (!state.nodes.has(from)) return { error: `找不到判断 ${from}。先 memory_search 确认 id。` }
+      if (!state.nodes.has(to)) return { error: `找不到判断 ${to}。先 memory_search 确认 id。` }
+      const at = now()
+      return {
+        events: [{ seq: state.seq + 1, at, type: 'edge.linked', data: { from, to, type, note: String(args?.note ?? '') } }],
+        result: { ok: true, note: `已在 ${from} 与 ${to} 之间建立 ${type} 关系（两边都会看到，不留单向边）。` },
+      }
+    })
+    if (planned.error !== undefined) return { ok: false, note: planned.error }
+    return planned.result
   }
 
   const history = (args) => {
@@ -313,41 +377,37 @@ export function createOperations(lib, opts = {}) {
       const id = String(args?.id ?? '')
       const text = String(args?.text ?? '').trim()
       const reason = String(args?.reason ?? '').trim()
-      // Governance: changing a rule requires a reason. A change without one is
-      // refused — that is the precondition for "auditable".
       if (reason === '') return { ok: false, note: '改规矩必须给 reason（这条纪律是刻意的：没有理由的变更无法审计）。' }
       if (text === '') return { ok: false, note: '新规矩不能为空。' }
 
-      if (!state.nodes.has(id)) {
-        // A missing rule is created, and the reason is recorded as its rationale.
+      const planned = atomically((currentState) => {
+        const target = currentState.nodes.get(id)
+        if (target === undefined) {
+          const at = now()
+          const newId = makeNodeId(at, currentState.seq + 1)
+          return {
+            events: [{ seq: currentState.seq + 1, at, type: 'node.created', data: { id: newId, kind: KIND.RULE, text } }],
+            result: { ok: true, rules: [{ id: newId, text, revision: 1, history: [] }], note: `新规矩已建立（${newId}）。理由：${reason}` },
+          }
+        }
+        if (target.kind !== KIND.RULE) return { error: `${id} 不是规矩，不能通过 memory_rule 修改。` }
         const at = now()
-        const newId = makeNodeId(at, state.seq + 1)
-        const res = lib.commit([
-          { seq: state.seq + 1, at, type: 'node.created', data: { id: newId, kind: KIND.RULE, text } },
-        ])
-        if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
-        return { ok: true, rules: [{ id: newId, text, revision: 1, history: [] }], note: `新规矩已建立（${newId}）。理由：${reason}` }
-      }
-
-      if (state.nodes.get(id).kind !== KIND.RULE) return { ok: false, note: `${id} 不是规矩，不能通过 memory_rule 修改。` }
-      const at = now()
-      const res = lib.commit([{ seq: state.seq + 1, at, type: 'rule.amended', data: { id, after: text, reason } }])
-      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
-      const after = lib.load()
-      const n = nodeOf(after.state, id)
+        return {
+          events: [{ seq: currentState.seq + 1, at, type: 'rule.amended', data: { id, after: text, reason } }],
+          result: { ok: true, id, text, note: '' },
+        }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      if (planned.result.id === undefined) return planned.result
+      const n = nodeOf(lib.load().state, planned.result.id)
       return {
         ok: true,
-        rules: [{ id, text: n.text, revision: n.revision, history: n.history.map((h) => `${new Date(h.at).toISOString()} · ${h.reason}`) }],
+        rules: [{ id: planned.result.id, text: n.text, revision: n.revision, history: n.history.map((h) => `${new Date(h.at).toISOString()} · ${h.reason}`) }],
         note: `规矩已改（第 ${n.revision} 版）。理由已留痕。`,
       }
     }
 
     if (action === 'rollback') {
-      // Rollback restores a rule to its **Nth revision** (N is 1-based and maps
-      // to history[N-1]). It restores rather than deleting events: the ledger is
-      // append-only and history is never erased. A rollback is itself a new
-      // change, so it also needs a reason and also enters history — which keeps
-      // the act of rolling back auditable instead of wiping the past.
       const id = String(args?.id ?? '')
       const toRevision = Number(args?.to_revision)
       const reason = String(args?.reason ?? '').trim()
@@ -355,32 +415,22 @@ export function createOperations(lib, opts = {}) {
       if (!Number.isInteger(toRevision) || toRevision < 1) {
         return { ok: false, note: 'rollback 需要 to_revision（正整数，从 1 开始，对应 memory_rule read 里 history 的序号）。' }
       }
-      const target = nodeOf(state, id)
-      if (target === undefined) return { ok: false, note: `找不到规矩 ${id}。` }
-      if (target.kind !== KIND.RULE) return { ok: false, note: `${id} 不是规矩（kind=${target.kind}），规矩治理只管 kind=rule 的节点。` }
-      const entry = target.history[toRevision - 1]
-      if (entry === undefined) {
-        return {
-          ok: false,
-          note: `规矩 ${id} 只有 ${target.history.length} 版，没有第 ${toRevision} 版。先用 action=read 看 history。`,
-        }
-      }
-      if (toRevision === target.revision) {
-        return { ok: false, note: `规矩 ${id} 现在就是第 ${toRevision} 版，无需回滚。` }
-      }
 
-      const at = now()
-      const res = lib.commit([
-        {
-          seq: state.seq + 1,
-          at,
-          type: 'rule.amended',
-          data: { id, after: entry.text, reason: `回滚到第 ${toRevision} 版：${reason}` },
-        },
-      ])
-      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
-      const after = lib.load()
-      const n = nodeOf(after.state, id)
+      const planned = atomically((currentState) => {
+        const target = nodeOf(currentState, id)
+        if (target === undefined) return { error: `找不到规矩 ${id}。` }
+        if (target.kind !== KIND.RULE) return { error: `${id} 不是规矩（kind=${target.kind}），规矩治理只管 kind=rule 的节点。` }
+        const entry = target.history[toRevision - 1]
+        if (entry === undefined) return { error: `规矩 ${id} 只有 ${target.history.length} 版，没有第 ${toRevision} 版。先用 action=read 看 history。` }
+        if (toRevision === target.revision) return { error: `规矩 ${id} 现在就是第 ${toRevision} 版，无需回滚。` }
+        const at = now()
+        return {
+          events: [{ seq: currentState.seq + 1, at, type: 'rule.amended', data: { id, after: entry.text, reason: `回滚到第 ${toRevision} 版：${reason}` } }],
+          result: { ok: true, id },
+        }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      const n = nodeOf(lib.load().state, planned.result.id)
       return {
         ok: true,
         rules: [{ id, text: n.text, revision: n.revision, history: n.history.map((h) => `${new Date(h.at).toISOString()} · ${h.reason}`) }],
@@ -417,41 +467,60 @@ export function createOperations(lib, opts = {}) {
     }
 
     const reason = String(args?.reason ?? '').trim()
+    if (reason === '' && action !== 'propose') return { ok: false, note: `${action} 必须给 reason，确保人格变化可审计。` }
+
     if (action === 'propose') {
       const text = String(args?.text ?? '').trim()
       if (text === '') return { ok: false, note: '人格候选不能为空。' }
-      const id = makeNodeId(now(), state.seq + 1).replace(/^n_/, 'p_')
       const evidence = Array.isArray(args?.evidence) ? args.evidence : []
       const sourceIds = Array.isArray(args?.source_ids) ? args.source_ids.filter((x) => typeof x === 'string' && x !== '') : []
-      const missing = sourceIds.filter((sourceId) => !state.nodes.has(sourceId))
-      if (missing.length > 0) return { ok: false, note: `人格候选引用了不存在的记忆：${missing.join(', ')}` }
       const confidence = Number.isFinite(Number(args?.confidence)) ? Number(args.confidence) : 0.5
-      const res = lib.commit([{ seq: state.seq + 1, at: now(), type: 'persona.proposed', data: { id, text, evidence, sourceIds, confidence, reason } }])
-      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
-      return { ok: true, action: 'proposed', id, status: 'candidate', note: '人格候选已记录，等待用户确认；它暂时不会成为稳定人格。' }
+      const planned = atomically((currentState) => {
+        const missing = sourceIds.filter((sourceId) => !currentState.nodes.has(sourceId))
+        if (missing.length > 0) return { error: `人格候选引用了不存在的记忆：${missing.join(', ')}` }
+        const at = now()
+        const id = makeNodeId(at, currentState.seq + 1).replace(/^n_/, 'p_')
+        return {
+          events: [{ seq: currentState.seq + 1, at, type: 'persona.proposed', data: { id, text, evidence, sourceIds, confidence, reason } }],
+          result: { ok: true, action: 'proposed', id, status: 'candidate', note: '人格候选已记录，等待用户确认；它暂时不会成为稳定人格。' },
+        }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      return planned.result
     }
 
     const id = String(args?.id ?? '')
-    const current = state.persona.get(id)
-    if (current === undefined) return { ok: false, note: `找不到人格特征 ${id}。先用 action=read 查看。` }
-    if (reason === '') return { ok: false, note: `${action} 必须给 reason，确保人格变化可审计。` }
-
     if (action === 'accept' || action === 'reject') {
-      if (action === 'accept' && current.status !== 'candidate') return { ok: false, note: `只有 candidate 才能确认，当前状态是 ${current.status}。` }
-      if (action === 'reject' && current.status !== 'candidate') return { ok: false, note: `只有 candidate 才能拒绝，当前状态是 ${current.status}。` }
-      const res = lib.commit([{ seq: state.seq + 1, at: now(), type: action === 'accept' ? 'persona.accepted' : 'persona.rejected', data: { id, reason } }])
-      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
-      return { ok: true, action, id, status: action === 'accept' ? 'active' : 'rejected', note: action === 'accept' ? '人格特征已确认，会进入后续会话注入。从现在起，写新记忆和说话时自然运用其中的表达习惯，不必机械重复口头禅；保留历史记忆的原样。' : '人格候选已拒绝，不会进入人格注入。' }
+      const planned = atomically((currentState) => {
+        const current = currentState.persona.get(id)
+        if (current === undefined) return { error: `找不到人格特征 ${id}。先用 action=read 查看。` }
+        if (current.status !== 'candidate') return { error: `只有 candidate 才能${action === 'accept' ? '确认' : '拒绝'}，当前状态是 ${current.status}。` }
+        const at = now()
+        return {
+          events: [{ seq: currentState.seq + 1, at, type: action === 'accept' ? 'persona.accepted' : 'persona.rejected', data: { id, reason } }],
+          result: { ok: true, action, id, status: action === 'accept' ? 'active' : 'rejected', note: action === 'accept' ? '人格特征已确认，会进入后续会话注入。从现在起，写新记忆和说话时自然运用其中的表达习惯，不必机械重复口头禅；保留历史记忆的原样。' : '人格候选已拒绝，不会进入人格注入。' },
+        }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      return planned.result
     }
 
     if (action === 'revise') {
-      if (current.status !== 'active') return { ok: false, note: `只有已确认的人格才能修订，当前状态是 ${current.status}。` }
       const text = String(args?.text ?? '').trim()
       if (text === '') return { ok: false, note: '修订后的人格特征不能为空。' }
-      const confidence = Number.isFinite(Number(args?.confidence)) ? Number(args.confidence) : current.confidence
-      const res = lib.commit([{ seq: state.seq + 1, at: now(), type: 'persona.revised', data: { id, after: text, confidence, reason } }])
-      if (!res.ok) return { ok: false, note: `写盘失败：${res.reason}` }
-      return { ok: true, action: 'revised', id, status: current.status, note: '人格特征已修订，修订理由已留痕。' }
+      const confidence = Number.isFinite(Number(args?.confidence)) ? Number(args.confidence) : undefined
+      const planned = atomically((currentState) => {
+        const current = currentState.persona.get(id)
+        if (current === undefined) return { error: `找不到人格特征 ${id}。先用 action=read 查看。` }
+        if (current.status !== 'active') return { error: `只有已确认的人格才能修订，当前状态是 ${current.status}。` }
+        const at = now()
+        return {
+          events: [{ seq: currentState.seq + 1, at, type: 'persona.revised', data: { id, after: text, confidence: confidence ?? current.confidence, reason } }],
+          result: { ok: true, action: 'revised', id, status: current.status, note: '人格特征已修订，修订理由已留痕。' },
+        }
+      })
+      if (planned.error !== undefined) return { ok: false, note: planned.error }
+      return planned.result
     }
 
     return { ok: false, note: `不认识的 action：${action}（支持 read / propose / accept / reject / revise）。` }

@@ -20,8 +20,268 @@
  *    auditable fact.
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync, renameSync, unlinkSync, mkdirSync, appendFileSync, openSync, readSync, closeSync, fstatSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, statSync, renameSync, unlinkSync, mkdirSync, appendFileSync, openSync, readSync, closeSync, fstatSync, linkSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { dirname, join } from 'node:path'
+
+/**
+ * How long a lock file may sit before it is considered abandoned.
+ *
+ * ⚠️ This exists because of a concrete failure mode, not for tidiness: a lock
+ * created with O_EXCL and never removed — because the holder crashed, was
+ * killed, or the machine lost power — would block **every subsequent write
+ * forever**. A lock without recovery turns "two writers may collide" into
+ * "after one crash, nothing can ever be written again", which is strictly
+ * worse than the race it was meant to fix.
+ *
+ * 5 s is generous for a write that normally completes in single-digit
+ * milliseconds, so it will not steal a lock from a live writer.
+ */
+export const LOCK_STALE_MS = 5000
+
+/**
+ * How long a caller waits for a held lock before giving up.
+ *
+ * Deliberately much shorter than LOCK_STALE_MS: waiting is synchronous, so it
+ * blocks whatever asked to write. Two seconds of contention is already a sign
+ * something is wrong; failing loudly beats stalling a tool call.
+ */
+export const LOCK_WAIT_MS = 2000
+
+/**
+ * Whether a process id is still running.
+ *
+ * `process.kill(pid, 0)` performs the existence check without delivering a
+ * signal. EPERM means the process exists but belongs to another user, which
+ * still counts as alive — treating it as dead would let us steal a live lock.
+ *
+ * @param {number} pid - Process id from a lock file.
+ * @returns {boolean} Whether that process is still running.
+ */
+export function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err.code === 'EPERM'
+  }
+}
+
+/**
+ * Block the current thread for a few milliseconds.
+ *
+ * The write path is synchronous throughout (appendFileSync, renameSync), so
+ * waiting for a lock has to be synchronous too. `Atomics.wait` on a throwaway
+ * SharedArrayBuffer is the standard way to sleep without a busy loop burning a
+ * core.
+ *
+ * @param {number} ms - Milliseconds to sleep.
+ * @returns {void}
+ */
+function sleepSync(ms) {
+  const sab = new SharedArrayBuffer(4)
+  Atomics.wait(new Int32Array(sab), 0, 0, ms)
+}
+
+/**
+ * Take the ledger's write lock, or report that it could not be taken.
+ *
+ * ## Why a lock is needed at all, given ids are already unique
+ *
+ * Unique ids stop two writers from producing the same node id, which stops
+ * nodes from being silently dropped. They do **not** stop two writers from
+ * computing the same `seq`. Sequence numbers are what give the ledger its
+ * order, and order is load-bearing: `foldEvents` sorts by `seq`, and
+ * `supersedeChain` walks supersession links in that order. Two concurrent
+ * supersessions of the same assertion can therefore fold into a chain that
+ * reflects neither writer's intent.
+ *
+ * So the invariant the lock protects is not "unique ids" but **"seq order
+ * equals commit order"**.
+ *
+ * ## The creation race, and why the owner is written *before* the file appears
+ *
+ * The obvious implementation — `openSync(path, 'wx')` then `writeFileSync(fd,
+ * owner)` — has a real window: between the atomic create and the owner write,
+ * the lock file exists but is **empty**. A second process that hits that
+ * window reads `''`, `JSON.parse` throws, the holder is unknown, and the lock
+ * is classified as abandoned and deleted. Both processes then believe they hold
+ * it.
+ *
+ * Measured: 6 processes × 1 write showed a maximum concurrent depth of **2**,
+ * and in the full 4-process × 3-write run two processes were handed the same
+ * `seq`. The lock was there and silently not working — the worst kind of
+ * failure.
+ *
+ * The fix is to make the owner readable at the instant the path becomes
+ * visible: write the owner to a private temp file first, then hard-link it into
+ * place. `link()` fails atomically if the target exists, and the link is only
+ * created once the content is already on disk. No empty-file window exists.
+ *
+ * ## Recovery
+ *
+ * A held lock is inspected before waiting: if its owner is gone, or it is
+ * older than LOCK_STALE_MS, it is removed and the lock is retried. An
+ * **unreadable** lock is only stolen once it is older than the stale window,
+ * never immediately — see the comment at that branch.
+ *
+ * @param {string} lockPath - Path of the lock file.
+ * @param {{waitMs?: number, staleMs?: number, now?: () => number}} [opts] - Tunables (tests inject these).
+ * @returns {{ok: boolean, reason?: string}} Whether the lock is now held.
+ */
+export function acquireLock(lockPath, opts = {}) {
+  const waitMs = Number.isFinite(opts.waitMs) ? opts.waitMs : LOCK_WAIT_MS
+  const staleMs = Number.isFinite(opts.staleMs) ? opts.staleMs : LOCK_STALE_MS
+  const now = opts.now ?? (() => Date.now())
+  const deadline = now() + waitMs
+  const owner = JSON.stringify({ pid: process.pid, at: now() })
+
+  try {
+    mkdirSync(dirname(lockPath), { recursive: true })
+  } catch (err) {
+    return { ok: false, reason: `无法建目录：${err.message}` }
+  }
+
+  // A per-attempt temp name so two processes never share a staging file.
+  const tmpPath = `${lockPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+
+  const stage = () => {
+    writeFileSync(tmpPath, owner)
+  }
+  const cleanupTmp = () => {
+    try { unlinkSync(tmpPath) } catch { /* already moved or never created */ }
+  }
+
+  for (;;) {
+    // Stage the owner first: by the time the lock path exists, its content is
+    // already complete. See the header note about the empty-file window.
+    try {
+      stage()
+    } catch (err) {
+      cleanupTmp()
+      return { ok: false, reason: `无法写锁文件：${err.message}` }
+    }
+
+    try {
+      // link() is atomic and fails with EEXIST when the target exists, exactly
+      // like O_EXCL — but the content is guaranteed present.
+      linkSync(tmpPath, lockPath)
+      cleanupTmp()
+      return { ok: true }
+    } catch (err) {
+      cleanupTmp()
+      if (err.code !== 'EEXIST') return { ok: false, reason: `抢锁失败：${err.message}` }
+    }
+
+    // Someone holds it. Decide: steal, wait, or give up.
+    let holder = null
+    let readable = false
+    try {
+      holder = JSON.parse(readFileSync(lockPath, 'utf8'))
+      readable = true
+    } catch {
+      holder = null
+    }
+
+    /**
+     * Age of the lock.
+     *
+     * When the content is readable its own `at` is authoritative — it is the
+     * moment the owner claimed it. When it is not readable (empty, truncated,
+     * or held open by something else) fall back to the file's mtime, which is
+     * still a real timestamp.
+     *
+     * ⚠️ Never default to `Infinity` here. That was a bug: an unreadable lock
+     * got `age = Infinity`, which satisfied `age > staleMs` and was stolen
+     * immediately — exactly the behaviour this branch is supposed to prevent.
+     */
+    const holderAt = Number(holder?.at)
+    let age
+    if (Number.isFinite(holderAt)) {
+      age = now() - holderAt
+    } else {
+      try {
+        age = now() - statSync(lockPath).mtimeMs
+      } catch {
+        // Vanished between the read and the stat: retry from the top.
+        continue
+      }
+    }
+    const holderAlive = readable && isPidAlive(Number(holder?.pid))
+
+    /**
+     * Steal only when we can prove the holder is gone, or when the lock is
+     * older than the stale window.
+     *
+     * ⚠️ An unreadable lock must **not** be stolen immediately. Doing so was
+     * the second half of the race: with the link-based creation above the
+     * window is gone, but a lock can still be briefly unreadable if a reader
+     * loses the race against an antivirus or indexing service holding the file.
+     * Waiting out the stale window costs at most one slow write; stealing it
+     * wrongly hands out two concurrent writers.
+     */
+    if ((readable && !holderAlive) || age > staleMs) {
+      try {
+        unlinkSync(lockPath)
+      } catch { /* someone else may have removed it first; retry anyway */ }
+      continue
+    }
+
+    if (now() >= deadline) {
+      return {
+        ok: false,
+        reason: `账本被占用超过 ${waitMs}ms（持有者 pid ${String(holder?.pid)}，已 ${Math.round(age)}ms）`,
+      }
+    }
+    sleepSync(2)
+  }
+}
+
+/**
+ * Release a lock this process holds.
+ *
+ * Only removes the file when the recorded owner is this process: a lock stolen
+ * after a stale timeout may legitimately belong to someone else by now, and
+ * deleting it would hand out a second concurrent writer.
+ *
+ * @param {string} lockPath - Path of the lock file.
+ * @returns {void}
+ */
+export function releaseLock(lockPath) {
+  try {
+    const holder = JSON.parse(readFileSync(lockPath, 'utf8'))
+    if (Number(holder?.pid) !== process.pid) return
+  } catch {
+    // Unreadable: fall through and remove, since we cannot prove it is not ours.
+  }
+  try {
+    unlinkSync(lockPath)
+  } catch { /* already gone */ }
+}
+
+/**
+ * Run a function while holding the ledger's write lock.
+ *
+ * The function runs in a `finally`, so an exception inside it still releases
+ * the lock — a thrown planner must not leave the ledger permanently locked.
+ *
+ * @template T
+ * @param {string} ledgerPath - Ledger path; the lock sits beside it.
+ * @param {() => T} fn - Work to perform under the lock.
+ * @param {object} [opts] - Forwarded to acquireLock.
+ * @returns {{ok: true, value: T} | {ok: false, reason: string}} Result.
+ */
+export function withLedgerLock(ledgerPath, fn, opts = {}) {
+  const lockPath = `${ledgerPath}.lock`
+  const got = acquireLock(lockPath, opts)
+  if (!got.ok) return { ok: false, reason: got.reason }
+  try {
+    return { ok: true, value: fn() }
+  } finally {
+    releaseLock(lockPath)
+  }
+}
 
 /** Ledger file name. */
 export const LEDGER_FILE = 'ledger.jsonl'
