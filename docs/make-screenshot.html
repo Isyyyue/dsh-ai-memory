@@ -6,7 +6,8 @@
 <style>
   html, body { margin: 0; padding: 0; background: #0d1117; overflow: hidden; }
   /* 模拟 DSH 侧边栏的观感：深色、无边框 */
-  #stage { width: 880px; height: 640px; background: #0d1117; }
+  /* 画布给足空间：13 个节点 + 长标签，880x640 会把中心挤成一团 */
+  #stage { width: 1120px; height: 620px; background: #0d1117; }
   /* 插件 CSS 是 height:100%，这里必须让根元素撑满，否则 canvas 停在 300x150 */
   #stage > .dsh-am-root { height: 100%; }
 </style>
@@ -21,34 +22,36 @@
  * 原因：手写的最小 React 在 useEffect/ref 上不够可靠，而截图只需要渲染器本身。
  */
 
+/**
+ * 示意数据。
+ *
+ * ⚠️ 节点数和标签长度是为**可读性**选的，不是随手写的。上一版 13 个节点、
+ * 标签都接近 20 字，在画布中心叠成一片，图看着像"没做完"。这里减到 10 个，
+ * 并让标签更短 —— 图的作用是让人一眼看懂"节点 + 四种关系"，不是展示上限。
+ * 真实的记忆库可以有几倍于此的节点，那由面板自己处理。
+ */
 const NODES = [
-  { id: 'n_a1', kind: 'judgment', status: 'active',     text: '长文档应该先拆成可独立检索的块，再做索引' },
-  { id: 'n_a2', kind: 'judgment', status: 'superseded', text: '索引应该按整篇文档建，块会丢上下文' },
-  { id: 'n_a3', kind: 'judgment', status: 'active',     text: '召回质量差时先看分块边界，而不是换模型' },
-  { id: 'n_a4', kind: 'judgment', status: 'active',     text: '向量检索不适合精确的版本号查询' },
-  { id: 'n_b1', kind: 'judgment', status: 'active',     text: '评测集必须来自真实提问，自造题会高估效果' },
-  { id: 'n_b2', kind: 'judgment', status: 'superseded', text: '评测集可以从文档里反向生成' },
-  { id: 'n_b3', kind: 'judgment', status: 'active',     text: '离线指标涨了但线上没变，先怀疑查询分布不一致' },
-  { id: 'n_c1', kind: 'insight',  status: 'active',     text: '想法：把用户改过的答案当作隐式标注' },
-  { id: 'n_c2', kind: 'insight',  status: 'active',     text: '想法：分块大小或许该随文档类型自适应' },
-  { id: 'n_d1', kind: 'rule',     status: 'active',     text: '改检索策略前先记录当前指标' },
-  { id: 'n_d2', kind: 'rule',     status: 'active',     text: '不从单次失败就推翻整个方案，先复现三次' },
-  { id: 'n_e1', kind: 'judgment', status: 'active',     text: '缓存失效比缓存未命中更危险，因为它不报错' },
-  { id: 'n_e2', kind: 'judgment', status: 'active',     text: '任何静默降级都要能观测到' },
+  { id: 'n_a1', kind: 'judgment', status: 'active',     text: '长文档先拆块再索引' },
+  { id: 'n_a2', kind: 'judgment', status: 'superseded', text: '按整篇建索引' },
+  { id: 'n_a3', kind: 'judgment', status: 'active',     text: '召回差先看分块边界' },
+  { id: 'n_b1', kind: 'judgment', status: 'active',     text: '评测集要来自真实提问' },
+  { id: 'n_b2', kind: 'judgment', status: 'superseded', text: '评测集可从文档反向生成' },
+  { id: 'n_c1', kind: 'insight',  status: 'active',     text: '想法：用户改过的答案算隐式标注' },
+  { id: 'n_c2', kind: 'insight',  status: 'active',     text: '想法：分块大小随文档类型自适应' },
+  { id: 'n_d1', kind: 'rule',     status: 'active',     text: '改策略前先记录指标' },
+  { id: 'n_d2', kind: 'rule',     status: 'active',     text: '不从单次失败推翻方案' },
+  { id: 'n_e1', kind: 'judgment', status: 'active',     text: '静默降级比报错更危险' },
 ]
 
 const EDGES = [
   { from: 'n_a1', to: 'n_a2', type: 'supersedes' },
   { from: 'n_a3', to: 'n_a1', type: 'complements' },
-  { from: 'n_a4', to: 'n_a1', type: 'complements' },
   { from: 'n_b1', to: 'n_b2', type: 'supersedes' },
-  { from: 'n_b3', to: 'n_b1', type: 'complements' },
   { from: 'n_c1', to: 'n_b1', type: 'complements' },
   { from: 'n_c2', to: 'n_a1', type: 'tensions' },
-  { from: 'n_d1', to: 'n_b3', type: 'depends' },
+  { from: 'n_d1', to: 'n_a3', type: 'depends' },
   { from: 'n_d2', to: 'n_b1', type: 'depends' },
-  { from: 'n_e1', to: 'n_e2', type: 'complements' },
-  { from: 'n_e2', to: 'n_d1', type: 'depends' },
+  { from: 'n_e1', to: 'n_d1', type: 'complements' },
 ]
 
 const NODES_FULL = NODES.map((n) => ({
@@ -147,8 +150,26 @@ if (!GraphRendererClass) {
     const r = new GraphRendererClass(canvas, { onSelect: () => {}, onToggleRetired: () => {} })
     window.__r = r
     r.setData(NODES_FULL, EDGES)
-    // 让力导向跑一会儿再截图
-    setTimeout(() => { document.title = 'READY' }, 3500)
+
+    /**
+     * 等力导向收敛后再定稿。
+     *
+     * ⚠️ autoFit 只在 alpha 收敛后才算出稳定视野。上一版固定等 3.5s 就截图，
+     * 那时布局还在动，autoFit 按一个中间态算比例，结果**底部节点被切出画布**。
+     * 这里改成轮询 alpha：低于阈值再等一小会儿让 autoFit 落地，然后才 READY。
+     */
+    const settle = () => {
+      const alpha = r.alpha ?? 1
+      if (alpha > 0.005) {
+        setTimeout(settle, 120)
+        return
+      }
+      // 收敛后再给两帧，让 autoFit 的最终比例生效
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        document.title = 'READY'
+      }))
+    }
+    setTimeout(settle, 400)
   }))
 }
 </script>
