@@ -782,7 +782,35 @@ describe('client · interaction contract', () => {
   test('hover highlighting plus labels fading with zoom (following the Obsidian textFade)', () => {
     const code = readFileSync(CLIENT_PATH, 'utf8')
     assert.ok(/hoverId/.test(code))
-    assert.ok(/showLabel/.test(code))
+
+    // ⚠️ This used to assert that the literal string `showLabel` existed. That
+    // was a tautology dressed as a test: it only proved an identifier was
+    // present, never that labels fade. It passed happily while the code used a
+    // hard `scale > 0.85` threshold, which is exactly the "sudden jump" the
+    // Obsidian approach avoids.
+    //
+    // The behaviour now asserted is the real curve:
+    //   alpha = clamp(log2(scale) + 1 - TEXT_FADE_MULTIPLIER, 0, 1)
+    assert.ok(/labelAlphaFor\(id\) \{/.test(code), 'labelAlphaFor should exist')
+    assert.ok(/Math\.log2\(this\.scale\)/.test(code), 'the fade must follow log2(scale), per Obsidian')
+    assert.ok(/TEXT_FADE_MULTIPLIER/.test(code), 'the curve needs its shift constant')
+
+    // Reproduce the curve and check it is genuinely gradual, not a step.
+    const mult = Number(/const TEXT_FADE_MULTIPLIER = ([\d.]+)/.exec(code)[1])
+    const alphaAt = (scale) => Math.max(0, Math.min(1, Math.log2(scale) + 1 - mult))
+
+    assert.equal(alphaAt(0.25), 0, 'far out, labels are hidden')
+    assert.equal(alphaAt(4), 1, 'zoomed in, labels are fully opaque')
+    // The middle must be strictly between: that is what "fade" means.
+    const mid = alphaAt(1)
+    assert.ok(mid > 0 && mid < 1, `at scale 1 the alpha should be partial, got ${mid}`)
+    // And it must be monotonic: no jump back and forth as the user zooms.
+    let prev = -1
+    for (let s = 0.1; s <= 8; s += 0.1) {
+      const a = alphaAt(s)
+      assert.ok(a >= prev - 1e-9, `alpha must not decrease while zooming in (scale ${s.toFixed(1)})`)
+      prev = a
+    }
   })
 
   test('a drag is not misread as a click (dragMoved guard)', () => {
