@@ -135,47 +135,97 @@ describe('worker 物理 · 与 Obsidian 的数值一致', () => {
   })
 })
 
-describe('标签渐隐 · clamp(log2(scale)+1-mult, 0, 1)', () => {
-  /** 从 client.js 复刻曲线，用于独立断言。 */
+describe('标签渐隐 · 缩放曲线 × 重要性门槛', () => {
+  /**
+   * 从 client.js 复刻曲线，用于独立断言。
+   *
+   * ⚠️ 曲线有两个因子，缺一不可：
+   *   zoom:        clamp(log2(scale) + 1 - TEXT_FADE_MULTIPLIER, 0, 1)
+   *   importance:  每点 degree 把阈值下移 IMPORTANCE_PER_DEGREE octaves
+   *
+   * 只测 zoom 因子会漏掉「31 个节点全不透明」这个真实故障：scale 顶到
+   * fitToContent 的 1.6 上限时，纯 zoom 曲线已经饱和为 1，无论 degree
+   * 多少都一样 —— 图上就是 31 个标签叠成一片。
+   */
   function makeAlpha() {
     const code = readFileSync(CLIENT_PATH, 'utf8')
     const m = /const TEXT_FADE_MULTIPLIER = ([\d.]+)/.exec(code)
     assert.ok(m !== null, '缺少 TEXT_FADE_MULTIPLIER')
     const mult = Number(m[1])
-    return (scale) => Math.max(0, Math.min(1, Math.log2(scale) + 1 - mult))
+    // 系数现在经 perDegree 变量传入，允许调用方为小图放宽（见 make-screenshot.html）
+    const imp = /Number\.isFinite\(this\.importancePerDegree\) \? this\.importancePerDegree : ([\d.]+)/.exec(code)
+    assert.ok(imp !== null, '缺少 importance 系数（perDegree 默认值）')
+    const perDegree = Number(imp[1])
+    return (scale, degree = 0) => {
+      const importance = Math.min(4, Math.max(0, degree)) * perDegree
+      return Math.max(0, Math.min(1, Math.log2(scale) + 1 - mult + importance))
+    }
   }
 
   test('远看为 0，近看为 1', () => {
     const alphaAt = makeAlpha()
     assert.equal(alphaAt(0.1), 0)
     assert.equal(alphaAt(0.25), 0)
-    assert.equal(alphaAt(4), 1)
     assert.equal(alphaAt(8), 1)
+    assert.equal(alphaAt(16), 1)
   })
 
-  test('中间是**渐变**，不是阶跃（这正是「突然跳变」的反面）', () => {
+  test('**默认视野下不是所有标签都全不透明**（这是「乱成一团」的直接原因）', () => {
+    // fitToContent 的缩放上限是 1.6，大多数图会停在那儿。
+    // 若此时所有 degree 都是 1.0，31 个 22 字标签就会叠成一片。
     const alphaAt = makeAlpha()
-    const mid = alphaAt(1)
-    assert.ok(mid > 0 && mid < 1, `scale=1 时应为部分透明，实际 ${mid}`)
+    const atCap = [0, 1, 2, 3, 4].map((d) => alphaAt(1.6, d))
+    assert.ok(
+      atCap.some((a) => a < 1),
+      `scale=1.6 时至少要有一部分标签是淡的，实际 ${JSON.stringify(atCap)}`,
+    )
   })
 
-  test('单调不减：放大过程中标签不会忽隐忽现', () => {
+  test('重要性单调：degree 越高，同一缩放下越不透明', () => {
     const alphaAt = makeAlpha()
-    let prev = -1
-    for (let s = 0.1; s <= 8; s += 0.05) {
-      const a = alphaAt(s)
-      assert.ok(a >= prev - 1e-9, `scale ${s.toFixed(2)} 处 alpha 回退了`)
-      prev = a
+    for (const scale of [0.5, 1, 1.6, 2.5]) {
+      let prev = -1
+      for (let d = 0; d <= 4; d += 1) {
+        const a = alphaAt(scale, d)
+        assert.ok(a >= prev - 1e-9, `scale ${scale} degree ${d} 处 alpha 回退了`)
+        prev = a
+      }
     }
+  })
+
+  test('缩放单调：同一 degree 下，放大不会让标签变淡', () => {
+    const alphaAt = makeAlpha()
+    for (const d of [0, 2, 4]) {
+      let prev = -1
+      for (let s = 0.1; s <= 8; s += 0.05) {
+        const a = alphaAt(s, d)
+        assert.ok(a >= prev - 1e-9, `degree ${d} 在 scale ${s.toFixed(2)} 处回退了`)
+        prev = a
+      }
+    }
+  })
+
+  test('枢纽（degree 4）在默认视野下可读', () => {
+    const alphaAt = makeAlpha()
+    assert.ok(alphaAt(1.6, 4) >= 0.9, `枢纽应清晰可见，实际 ${alphaAt(1.6, 4)}`)
   })
 
   test('hover / 选中强制全不透明（指着节点就必须能读）', () => {
     const code = readFileSync(CLIENT_PATH, 'utf8')
-    const fn = /labelAlphaFor\(id\) \{[\s\S]*?\n      \}/.exec(code)
-    assert.ok(fn !== null, 'labelAlphaFor 应存在')
+    // 方法签名现在带 degree 参数
+    const fn = /labelAlphaFor\(id, degree = 0\) \{[\s\S]*?\n      \}/.exec(code)
+    assert.ok(fn !== null, 'labelAlphaFor(id, degree) 应存在')
     assert.ok(/this\.hoverId/.test(fn[0]), 'hover 必须强制 1')
     assert.ok(/this\.selectedId/.test(fn[0]), '选中必须强制 1')
     assert.ok(/return 1/.test(fn[0]))
+  })
+
+  test('drawLabel 把 degree 传进 alpha 计算（否则门槛形同虚设）', () => {
+    const code = readFileSync(CLIENT_PATH, 'utf8')
+    assert.ok(
+      /this\.labelAlphaFor\(n\.id, n\.degree\)/.test(code),
+      'drawLabel 必须传 n.degree，否则所有节点都按 degree 0 处理',
+    )
   })
 
   test('节点绘制段不出现非 1 的 globalAlpha（形状永远不透明）', () => {

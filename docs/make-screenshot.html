@@ -148,6 +148,17 @@ if (!GraphRendererClass) {
   // 等样式生效再构造（否则量到 300x150）
   requestAnimationFrame(() => requestAnimationFrame(() => {
     const r = new GraphRendererClass(canvas, { onSelect: () => {}, onToggleRetired: () => {} })
+    /**
+     * 放宽重要性门槛。
+     *
+     * 默认每点 degree 把阈值下移 0.5 octaves，是给**真实账本**调的：31 条判断、
+     * degree 最高 4，默认视野下只让枢纽显示标签，其余淡出。
+     *
+     * 但这张演示图只有 10 个节点、degree 最高 3，同样的门槛会把大部分标签
+     * 藏掉，图看着像空的。所以演示页单独放宽到 0.9 —— 小图本来就该多显示
+     * 一些，因为不会重叠。
+     */
+    r.importancePerDegree = 0.9
     window.__r = r
     r.setData(NODES_FULL, EDGES)
 

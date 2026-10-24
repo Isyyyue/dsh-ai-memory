@@ -789,21 +789,35 @@ describe('client · interaction contract', () => {
     // hard `scale > 0.85` threshold, which is exactly the "sudden jump" the
     // Obsidian approach avoids.
     //
-    // The behaviour now asserted is the real curve:
-    //   alpha = clamp(log2(scale) + 1 - TEXT_FADE_MULTIPLIER, 0, 1)
-    assert.ok(/labelAlphaFor\(id\) \{/.test(code), 'labelAlphaFor should exist')
+    // The behaviour now asserted is the real curve. It has TWO factors:
+    //   zoom:       clamp(log2(scale) + 1 - TEXT_FADE_MULTIPLIER, 0, 1)
+    //   importance: every degree point lowers the threshold by a fixed amount
+    // The importance factor is what keeps a 30-node graph readable; see
+    // graph-physics.test.js for the measured numbers behind it.
+    assert.ok(/labelAlphaFor\(id, degree = 0\) \{/.test(code), 'labelAlphaFor(id, degree) should exist')
     assert.ok(/Math\.log2\(this\.scale\)/.test(code), 'the fade must follow log2(scale), per Obsidian')
     assert.ok(/TEXT_FADE_MULTIPLIER/.test(code), 'the curve needs its shift constant')
+    assert.ok(/const importance = /.test(code), 'the curve needs its importance gate')
 
     // Reproduce the curve and check it is genuinely gradual, not a step.
     const mult = Number(/const TEXT_FADE_MULTIPLIER = ([\d.]+)/.exec(code)[1])
-    const alphaAt = (scale) => Math.max(0, Math.min(1, Math.log2(scale) + 1 - mult))
+    const perDegree = Number(/Number\.isFinite\(this\.importancePerDegree\) \? this\.importancePerDegree : ([\d.]+)/.exec(code)[1])
+    const alphaAt = (scale, degree = 0) => Math.max(
+      0,
+      Math.min(1, Math.log2(scale) + 1 - mult + Math.min(4, Math.max(0, degree)) * perDegree),
+    )
 
     assert.equal(alphaAt(0.25), 0, 'far out, labels are hidden')
-    assert.equal(alphaAt(4), 1, 'zoomed in, labels are fully opaque')
+    assert.equal(alphaAt(8), 1, 'zoomed in, labels are fully opaque')
     // The middle must be strictly between: that is what "fade" means.
-    const mid = alphaAt(1)
-    assert.ok(mid > 0 && mid < 1, `at scale 1 the alpha should be partial, got ${mid}`)
+    //
+    // ⚠️ The probe has to be a zoom AND degree where the curve is actually in
+    // its transition, not a guess. With the importance gate in place:
+    //   scale 1, degree 2 → log2(1)+1-2.2+1.0 = -0.2 → hidden (by design)
+    //   scale 2, degree 2 → log2(2)+1-2.2+1.0 =  0.8 → partial
+    // Asserting the first would be asserting the old saturated curve.
+    const mid = alphaAt(2, 2)
+    assert.ok(mid > 0 && mid < 1, `at scale 2 a degree-2 node should be partial, got ${mid}`)
     // And it must be monotonic: no jump back and forth as the user zooms.
     let prev = -1
     for (let s = 0.1; s <= 8; s += 0.1) {

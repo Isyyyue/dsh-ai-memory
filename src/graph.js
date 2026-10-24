@@ -24,6 +24,7 @@
 
 import { activeNodes, supersedeChain, backlinksOf, outlinksOf, STATUS, KIND } from './ledger.js'
 import { summarize } from './query.js'
+import { extractLabel, LABEL_MAX } from './label.js'
 
 /**
  * Build a graph snapshot.
@@ -111,8 +112,16 @@ export function buildSnapshot(state, opts = {}) {
 
   const nodes = chosen.map((n) => ({
     id: n.id,
-    // Summary rather than full text: the graph is a navigation layer, bodies are fetched on demand.
-    label: summarize(n.text, 60),
+    /**
+     * Label is the **claim**, not the first 18 characters of the body.
+     *
+     * ⚠️ This used to be `summarize(n.text, 60)`, which the renderer then
+     * truncated to 18 — so what reached the screen was whatever happened to sit
+     * at the start of the sentence. Measured on a real ledger, 61% of labels
+     * opened with 我认为 / 判断 / 主人说 / memory_*, and the visible 18
+     * characters carried almost none of the judgment. See label.js.
+     */
+    label: extractLabel(n.text, LABEL_MAX),
     kind: n.kind,
     status: n.status,
     degree: degree.get(n.id) ?? 0,
