@@ -1,14 +1,31 @@
 # dsh-ai-memory
 
+[![CI](https://github.com/Isyyyue/dsh-ai-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/Isyyyue/dsh-ai-memory/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
+[![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](./package.json)
+
 给 DeepSeek Harness（DSH）里的 AI 一套属于自己的长期记忆，并让人格从这些记忆和经历中逐渐生长出来。
 
 ![判断关系图谱：节点颜色区分种类——蓝是判断，青是想法，橙是规矩；连线颜色区分关系——绿是互补，红是矛盾，黄是依据，带箭头的蓝线是取代（示意数据，非真实记忆）](docs/graph.png)
+
+> **一句话**：它记录的不是聊天记录，而是 AI 自己形成的判断、没想完的问题、给自己定的规矩，以及这些内容如何随时间被推翻或保留。
+>
+> 目标不是让 AI 显得记得更多，而是让它**能追溯自己为什么改主意**——并且在没有人在场时，也能接着想下去。
 
 这个插件记录的不是完整聊天记录，也不是一组由用户写死的角色设定。它记录 AI 在互动中形成的判断、规则、想法、记忆来源和人格特征。它把这些内容保存为一个可追溯的 JSONL 账本，再从账本中计算当前状态、演化历史和关系图谱。
 
 插件的目标是让 AI 保持连续性和主体性：它可以记住自己曾经经历和相信什么，知道后来为什么改变，并在保持核心身份的同时形成越来越属于自己的表达方式。
 
 > DSH 的会话日志仍然是会话事实的唯一来源。本插件是派生的长期记忆缓存，不会向会话日志追加事件。
+
+## 它和「向量记忆」有什么不同
+
+大多数 AI 记忆方案用向量相似度判断「这条新信息是不是在推翻旧的」。本插件**完全不计算相似度、不调用 LLM**，取代判定只认结构化的 `(subject, relation, scope)` 键——可测试、可复现、零延迟，而且不会悄悄判错。
+
+为什么相似度在原理上做不到，见下一节的实测数据。
+
+代价是：换一种说法写同一件事，它不会自动合并。这是刻意的取舍——宁可让 AI 自己用 `memory_connect` 显式连上，也不要它猜。
 
 ---
 
@@ -234,3 +251,23 @@ node test/host-runtime.mjs <DSH源码根目录>
 ## 许可
 
 MIT，详见 [LICENSE](./LICENSE)。
+
+---
+
+## 相关文档
+
+| 文档 | 内容 |
+|---|---|
+| [CHANGELOG.md](./CHANGELOG.md) | 每个版本改了什么，以及为什么 |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | 开发流程，以及六条不能破的硬规则（每条都对应一次真实事故） |
+| [SECURITY.md](./SECURITY.md) | 怎么报告安全问题；为什么不要附真实账本 |
+| [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) | 讨论规范 |
+| [UPGRADE-SPEC.md](./UPGRADE-SPEC.md) | 内部升级规格：已完成什么、还剩什么、哪些约束容易被无意打破 |
+
+## 这个项目在意什么
+
+三条判断，决定了上面所有的技术选择：
+
+1. **静默失效比功能缺失更危险。** 报错会被人修；不报错但结果错的东西会一直错下去。所以账本里的 `problems` 会被注入到提示词里，未知的 `kind` 会留下记录，锁的竞态有专门的测试。
+2. **能测量的就不该靠感觉。** 图谱"不丝滑"最后定位到排斥力是 `1/d²` 而不是 `1/d`——这需要反汇编 Obsidian 的 WASM 才能确认，但确认之后改动只有一行。
+3. **不假装。** 账本存判断，不存体验。会话会断，记忆只留判断。所以文档里不写"它记得你"，只写它记下了什么、能查出什么。

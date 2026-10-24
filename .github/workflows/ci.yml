@@ -21,10 +21,58 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      - name: Run tests
+
+      # No install step: the plugin has no runtime or dev dependencies, and
+      # adding one would break a `link:` install (see CONTRIBUTING.md).
+      - name: Confirm the dependency-free guarantee
+        run: |
+          if [ -d node_modules ]; then
+            echo "node_modules exists — this plugin must stay dependency-free"
+            exit 1
+          fi
+          node -e "
+            const p = require('./package.json');
+            const bad = Object.keys({ ...p.dependencies, ...p.devDependencies, ...p.optionalDependencies });
+            if (bad.length) { console.error('runtime deps not allowed:', bad.join(', ')); process.exit(1) }
+            console.log('dependency-free: ok');
+          "
+
+      - name: Run unit tests
         run: npm test
-      - name: Validate manifest
+
+      - name: Validate manifest and hard constraints
         run: node test/manifest-check.mjs
-      - name: Verify lifecycle
+
+      - name: Verify lifecycle end to end
         run: npm run test:e2e
 
+      # The worker source is inlined into lib/client.js and compared byte for
+      # byte. Editing the worker without re-running the inliner is a silent
+      # divergence, so CI checks it rather than trusting the contributor.
+      - name: Check the inlined worker is in sync
+        run: |
+          node test/inline-worker.mjs
+          git diff --exit-code lib/client.js || {
+            echo "lib/client.js is out of sync with lib/client.graph-worker.js"
+            echo "run: node test/inline-worker.mjs"
+            exit 1
+          }
+
+      # Multi-process ledger writes. Runs on every push because the failure it
+      # guards (duplicate node ids, racy seq allocation) is invisible in a
+      # single-process test run.
+      - name: Verify concurrent ledger writes
+        run: node test/verify-concurrency.mjs
+
+      # Graph forces against Obsidian's measured values. Pure arithmetic, no
+      # browser needed.
+      - name: Verify graph physics
+        run: node test/verify-physics.mjs
+
+      # Guards the three unattended-write guardrails by trying to break them,
+      # rather than trusting that the unit tests cover them.
+      - name: Verify guardrails
+        run: node test/verify-guardrails.mjs
+
+      - name: Verify injection blocks and route auth
+        run: node test/verify-inject-routes.mjs

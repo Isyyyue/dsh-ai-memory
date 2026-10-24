@@ -2,7 +2,7 @@
   "name": "dsh-ai-memory",
   "version": "0.2.0",
   "type": "module",
-  "description": "给 DSH 里的 AI 一套属于自己的长期记忆，并让人格从记忆、反思和长期互动中逐渐生长。",
+  "description": "Persistent judgment memory for DeepSeek Harness agents: a bi-temporal JSONL ledger with deterministic supersession, open questions, and a knowledge graph.",
   "author": "Isyyyue",
   "repository": {
     "type": "git",
@@ -108,11 +108,16 @@
   "keywords": [
     "deepseek-harness",
     "dsh-plugin",
+    "ai-agent",
     "memory",
+    "bi-temporal",
+    "supersede",
+    "provenance",
+    "knowledge-graph",
     "personality",
     "self-reflection",
-    "supersede",
-    "knowledge-graph"
+    "jsonl",
+    "temporal-database"
   ],
   "license": "MIT"
 }
