@@ -2,7 +2,7 @@
 
 > 目标：把「记得住事」升级为「会自己接着想」。
 > 仓库：`dsh-plugins/plugins/dsh-ai-memory`
-> 现状基线：`npm test` **375/375 绿**，`node test/e2e.mjs` 40/40 绿，`node test/manifest-check.mjs` 通过。
+> 现状基线：`npm test` **375/375 绿**，`node test/e2e.mjs` 40/40 绿，`node test/checks/manifest-check.mjs` 通过。
 > 铁律：**每一步改完必须 `npm test` 全绿再往下**。红着不许继续。
 
 ---
@@ -364,8 +364,8 @@ export function focusFor(state, now, opts = {}) { ... }
 cd dsh-plugins\plugins\dsh-ai-memory
 npm test                     # 全绿，且总数 > 375
 node test/e2e.mjs            # 40/40
-node test/manifest-check.mjs # passed
-node test/inline-worker.mjs  # 改过 worker 就必须跑
+node test/checks/manifest-check.mjs # passed
+node test/checks/inline-worker.mjs  # 改过 worker 就必须跑
 node _obsidian-peek/verify-physics.mjs   # 图谱物理仍与 Obsidian 一致
 ```
 
@@ -392,7 +392,7 @@ node _obsidian-peek/verify-physics.mjs   # 图谱物理仍与 Obsidian 一致
 4. **不要在 `apply()` 里读未 `inject` 的服务名**。`ctx` 是受限 Proxy，读未声明的服务会抛错，导致整个应用拒绝启动。
 5. **不要把 `webServer` 加进 `inject`**。它现在是 `ctx.inject(['webServer'], ...)` 的可选作用域依赖，改成必需会让没有 webServer 的 profile 里连工具都注册不上。
 6. **不要让 `ledger.js` 静态 import `supersede.js`**（循环依赖）。
-7. **改 `lib/client.graph-worker.js` 后必须跑 `node test/inline-worker.mjs`**。`client.js` 里有一份内联副本（`WORKER_SOURCE`），`worker-inline.test.js` 会逐字比对，不同步必红。
+7. **改 `lib/client.graph-worker.js` 后必须跑 `node test/checks/inline-worker.mjs`**。`client.js` 里有一份内联副本（`WORKER_SOURCE`），`worker-inline.test.js` 会逐字比对，不同步必红。
 8. **不要把 `globalAlpha` 写进节点绘制循环**。节点形状必须永远不透明（退役靠颜色混合），标签才渐隐。两者抽成了独立方法 `drawLabel` / `labelAlphaFor`，`client.test.js` 有一条测试专门扫 `draw()` 切片里的 alpha 赋值。
 
 ---

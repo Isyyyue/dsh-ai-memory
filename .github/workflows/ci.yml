@@ -37,42 +37,75 @@ jobs:
             console.log('dependency-free: ok');
           "
 
-      - name: Run unit tests
+      - name: Unit tests
         run: npm test
 
-      - name: Validate manifest and hard constraints
-        run: node test/manifest-check.mjs
+      - name: Manifest and hard constraints
+        run: npm run test:manifest
 
-      - name: Verify lifecycle end to end
+      - name: Lifecycle end to end
         run: npm run test:e2e
 
       # The worker source is inlined into lib/client.js and compared byte for
       # byte. Editing the worker without re-running the inliner is a silent
       # divergence, so CI checks it rather than trusting the contributor.
-      - name: Check the inlined worker is in sync
+      - name: Inlined worker is in sync
         run: |
-          node test/inline-worker.mjs
+          node test/checks/inline-worker.mjs
           git diff --exit-code lib/client.js || {
             echo "lib/client.js is out of sync with lib/client.graph-worker.js"
-            echo "run: node test/inline-worker.mjs"
+            echo "run: node test/checks/inline-worker.mjs"
             exit 1
           }
 
-      # Multi-process ledger writes. Runs on every push because the failure it
-      # guards (duplicate node ids, racy seq allocation) is invisible in a
-      # single-process test run.
-      - name: Verify concurrent ledger writes
-        run: node test/verify-concurrency.mjs
+      # Everything below is a manual verification script. They run here because
+      # each guards a failure that is invisible in a normal test run:
+      #
+      #   physics      pure arithmetic against Obsidian's measured values
+      #   concurrency  multi-process ledger writes (duplicate ids, racy seq)
+      #   guardrails   attempts the forbidden self-writes rather than assuming
+      #   routes       injection blocks and loopback/same-origin checks
+      - name: Verification scripts
+        run: npm run test:verify
 
-      # Graph forces against Obsidian's measured values. Pure arithmetic, no
-      # browser needed.
-      - name: Verify graph physics
-        run: node test/verify-physics.mjs
-
-      # Guards the three unattended-write guardrails by trying to break them,
-      # rather than trusting that the unit tests cover them.
-      - name: Verify guardrails
-        run: node test/verify-guardrails.mjs
-
-      - name: Verify injection blocks and route auth
-        run: node test/verify-inject-routes.mjs
+      # Markdown hygiene: broken relative links and unlabeled code fences are
+      # how documentation silently rots.
+      - name: Documentation checks
+        run: |
+          node -e "
+            const fs = require('fs'), path = require('path');
+            const root = process.cwd();
+            const md = [];
+            (function walk(d) {
+              for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+                if (e.name === '.git' || e.name === 'node_modules') continue;
+                const p = path.join(d, e.name);
+                if (e.isDirectory()) walk(p); else if (e.name.endsWith('.md')) md.push(p);
+              }
+            })(root);
+            let broken = 0, fences = 0, unlabeled = 0;
+            const F = String.fromCharCode(96, 96, 96);
+            for (const f of md) {
+              const s = fs.readFileSync(f, 'utf8');
+              for (const m of s.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)) {
+                const t = m[1];
+                if (/^(https?:|mailto:|#)/.test(t)) continue;
+                const clean = t.split('#')[0];
+                if (clean === '') continue;
+                if (!fs.existsSync(path.resolve(path.dirname(f), clean))) {
+                  console.error('broken link:', path.relative(root, f), '->', t);
+                  broken++;
+                }
+              }
+              let inF = false;
+              for (const line of s.split('\n')) {
+                if (line.startsWith(F)) {
+                  if (!inF) { fences++; if (line.slice(3).trim() === '') { unlabeled++; console.error('unlabeled fence:', path.relative(root, f)); } inF = true; }
+                  else inF = false;
+                }
+              }
+            }
+            console.log(md.length + ' markdown files, ' + fences + ' code fences');
+            if (broken || unlabeled) process.exit(1);
+            console.log('docs: ok');
+          "

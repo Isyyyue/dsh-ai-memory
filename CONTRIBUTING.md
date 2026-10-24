@@ -30,7 +30,7 @@ These exist because each one corresponds to a failure that already happened:
    making it required loses the tools in profiles that lack it.
 4. **Do not commit a real ledger, a personal path, or a credential.** The
    ledger contains someone's judgments and conversation content.
-5. **Run `node test/inline-worker.mjs` after editing the graph worker.**
+5. **Run `node test/checks/inline-worker.mjs` after editing the graph worker.**
    `lib/client.js` carries an inlined copy and a test compares them byte for
    byte.
 6. **Do not bypass `atomically()` when writing the ledger.** Reading state
@@ -44,14 +44,14 @@ Node.js 22 or newer. No install step — there are no dependencies.
 ```powershell
 npm test                        # unit suite
 node test/e2e.mjs               # lifecycle, end to end
-node test/manifest-check.mjs    # manifest, syntax, and hard-constraint checks
+node test/checks/manifest-check.mjs    # manifest, syntax, and hard-constraint checks
 ```
 
 Two manual verifications, used when the corresponding area changes:
 
 ```powershell
-node test/verify-physics.mjs       # graph forces vs. Obsidian's measured values
-node test/verify-concurrency.mjs   # multi-process ledger writes
+node test/manual/verify-physics.mjs       # graph forces vs. Obsidian's measured values
+node test/manual/verify-concurrency.mjs   # multi-process ledger writes
 ```
 
 If a check needs a local DSH host, say so in the pull request rather than

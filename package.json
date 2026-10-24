@@ -33,8 +33,11 @@
     "@deepseek-ai/dsh": "^0.2.1-rc.2"
   },
   "scripts": {
-    "test": "node --test \"test/**/*.test.js\"",
-    "test:e2e": "node test/e2e.mjs"
+    "test": "node --test \"test/unit/**/*.test.js\"",
+    "test:e2e": "node test/e2e.mjs",
+    "test:manifest": "node test/checks/manifest-check.mjs",
+    "test:verify": "node test/manual/verify-physics.mjs && node test/manual/verify-concurrency.mjs && node test/manual/verify-guardrails.mjs && node test/manual/verify-inject-routes.mjs",
+    "test:all": "npm test && npm run test:e2e && npm run test:manifest && npm run test:verify"
   },
   "dsh": {
     "bundle": {

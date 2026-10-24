@@ -18,7 +18,7 @@ without output is not verification.
 
     npm test                 → ℹ pass 381 / ℹ fail 0
     node test/e2e.mjs        → 40/40 passed
-    node test/manifest-check.mjs → passed
+    node test/checks/manifest-check.mjs → passed
 -->
 
 ```
@@ -29,7 +29,7 @@ paste output
 
 - [ ] `npm test` passes, and the test count went **up** if behaviour changed
 - [ ] New behaviour has a test that would **fail without this change**
-- [ ] Ran `node test/inline-worker.mjs` if `lib/client.graph-worker.js` changed
+- [ ] Ran `node test/checks/inline-worker.mjs` if `lib/client.graph-worker.js` changed
       (the worker source is inlined into `lib/client.js` and compared byte for byte)
 - [ ] No new runtime dependency (`link:` installs get no `node_modules`)
 - [ ] No real ledger, personal path, or credential in the diff

@@ -210,30 +210,63 @@ plugin_manager action=remove_bundle target=dsh-ai-memory
 
 ## 开发与验证
 
-项目要求 Node.js 22 或更高版本，并且运行时不依赖外部 npm 包：
+项目要求 Node.js 22 或更高版本，并且运行时不依赖外部 npm 包（`node_modules` 不存在是刻意的）。
 
-```powershell
-npm test
-node test/e2e.mjs
-node test/manifest-check.mjs
-node test/bundle-served.mjs
+### 测试目录怎么分
+
+```text
+test/
+├── e2e.mjs          端到端：账本生命周期
+├── unit/            单元测试 —— npm test 跑的就是这里
+├── checks/          清单、语法、硬约束、客户端服务状态
+├── manual/          手动验证 —— CI 也跑，每个都防一类「正常测试看不见」的故障
+├── tools/           一次性诊断 —— 回答「为什么这条线是绿的」这类问题
+└── browser/         本地浏览器脚手架（已 gitignore，不可移植）
 ```
 
-单元测试使用以下 glob 形式：
+分成四类而不是全塞在 `test/` 根目录，是因为**「该在 CI 里跑」和「只在排查时跑」是两回事**。混在一起会让人分不清哪个可以删。
+
+### 常用命令
 
 ```powershell
-node --test "test/**/*.test.js"
+npm test                # 单元测试（test/unit）
+npm run test:e2e        # 端到端
+npm run test:manifest   # 清单与硬约束
+npm run test:verify     # 四项手动验证：物理、并发、护栏、路由
+npm run test:all        # 以上全部
 ```
 
-不要使用 Node.js 的默认测试发现方式，否则 `test/` 下的辅助服务可能会被当成测试进程启动。
-
-已有本地 DSH 运行时的开发者，还可以用独立账本验证真实工具注册、调用、提示组装与 HTTP 路由：
+单独跑某一项：
 
 ```powershell
-node test/host-runtime.mjs <DSH源码根目录>
+node test/manual/verify-physics.mjs       # 图谱力公式 vs Obsidian 实测值
+node test/manual/verify-concurrency.mjs   # 多进程写同一账本
+node test/manual/verify-guardrails.mjs    # 尝试越界，验证三条护栏
+node test/manual/verify-inject-routes.mjs # 注入分段与回环/同源校验
+node test/checks/inline-worker.mjs        # 改过 worker 就必须跑
 ```
 
-此检查复用本地 DSH 服务，不安装依赖、不调用模型、不修改正式 profile 或记忆账本。`bundle-served.mjs` 则检查 desktop profile 实际安装的客户端；可用 `DSH_PROFILE_DIR` 或 `DSH_PLUGIN_ROOT` 指定其他安装位置。
+**单元测试必须用显式 glob**（`test/unit/**/*.test.js`），不要用 Node 的默认发现方式，否则 `checks/` 里的辅助服务会被当成测试进程启动。
+
+### 排查工具
+
+```powershell
+node test/tools/edge-colors.mjs     # 每条边会被画成什么颜色
+node test/tools/why-no-edges.mjs    # 「是没有关系，还是有 bug」
+node test/tools/kinds.mjs           # 按 kind 上色是否真的生效
+node test/tools/check-injection.mjs # 注入里三种 kind 是否都在
+```
+
+### 已有本地 DSH 运行时
+
+```powershell
+node test/checks/host-runtime.mjs <DSH源码根目录>
+```
+
+复用本地 DSH 服务验证真实工具注册、调用、提示组装与 HTTP 路由；不安装依赖、不调用模型、不修改正式 profile 或记忆账本。
+
+`node test/checks/bundle-served.mjs` 检查 desktop profile 实际安装的客户端是否被服务；可用 `DSH_PROFILE_DIR` 或 `DSH_PLUGIN_ROOT` 指定其他安装位置。
+
 
 ## 已知边界
 
