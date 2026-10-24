@@ -880,4 +880,85 @@ describe('client · data channel', () => {
     }
     assert.ok(!/var\(--/.test(body), 'the legend must no longer name CSS variables (it would disagree with the canvas)')
   })
+
+  test('**the dominant relation draws neutral, not a saturated hue**', () => {
+    /**
+     * Colour is a scarce signal and must be spent on the exception.
+     *
+     * Measured on a real ledger: complements is 17 of 22 edges (77%), so when
+     * it was green the whole canvas was green — pixel sampling showed green as
+     * the single largest non-background region at 17.9%. A colour covering most
+     * of the image cannot encode anything; it is the background.
+     *
+     * This test pins the decision so a later "make every relation a pretty
+     * colour" change has to argue with it.
+     */
+    const code = readFileSync(CLIENT_PATH, 'utf8')
+    const fn = /function edgeColor\(type, c\) \{[\s\S]*?\n    \}/.exec(code)
+    assert.ok(fn !== null, 'edgeColor should exist')
+    const body = fn[0]
+
+    // complements must not be given a saturated token; it falls through to the
+    // neutral default.
+    assert.ok(
+      !/complements.*return c\.(success|brand|error|warn|info)/.test(body),
+      'complements is the default relation — it must not be coloured',
+    )
+    assert.ok(/return c\.borderL2/.test(body), 'the fallback must be the neutral border colour')
+
+    // The rare relations keep their colours.
+    for (const [type, token] of [
+      ['tensions', 'error'],
+      ['supersedes', 'brand'],
+      ['depends', 'warn'],
+      ['derives', 'info'],
+    ]) {
+      assert.ok(
+        new RegExp(`if \\(type === '${type}'\\) return c\\.${token}`).test(body),
+        `${type} should map to c.${token}`,
+      )
+    }
+  })
+
+  test('**the neutral edge colour is legible, not a faint border token**', () => {
+    /**
+     * The dominant relation now draws with this colour for 77% of edges, so it
+     * is the graph's main line rather than a border accent.
+     *
+     * The original value was `rgba(128,128,128,.6)`, which over #0d1117 measures
+     * ≈#5a5a5a — barely above the background, so the graph looked empty where it
+     * should look connected. A themed border token is deliberately too faint for
+     * this job, which is why the colour is now a literal.
+     */
+    const code = readFileSync(CLIENT_PATH, 'utf8')
+    const fb = /function fallbackColors\(\)[\s\S]*?\n    \}/.exec(code)
+    assert.ok(fb !== null, 'fallbackColors should exist')
+    const m = /borderL2: '([^']+)'/.exec(fb[0])
+    assert.ok(m !== null, 'borderL2 should be a literal colour')
+    assert.ok(!/rgba/.test(m[1]), `the neutral edge colour must be opaque, got ${m[1]}`)
+
+    // Rough luminance check: must be clearly above the canvas background.
+    const hex = /^#([0-9a-f]{6})$/i.exec(m[1])
+    assert.ok(hex !== null, `expected a #rrggbb literal, got ${m[1]}`)
+    const v = Number.parseInt(hex[1], 16)
+    const lum = ((v >> 16) & 0xff) * 0.299 + ((v >> 8) & 0xff) * 0.587 + (v & 0xff) * 0.114
+    assert.ok(lum > 80, `neutral edge luminance ${lum.toFixed(0)} is too close to the dark background`)
+
+    // And the theme path must not silently revert to the faint token.
+    assert.ok(
+      !/borderL2: pick\('--dsw-alias-border-l2'/.test(code),
+      'borderL2 must not come from the border theme token',
+    )
+  })
+
+  test('legend lists the coloured relations before the neutral default', () => {
+    // The legend explains what a reader cannot decode alone; grey needs no
+    // explanation, so it goes last.
+    const code = readFileSync(CLIENT_PATH, 'utf8')
+    const body = code.slice(code.indexOf('function edgeLegend'), code.indexOf('const CSS ='))
+    const idx = (t) => body.indexOf(`'${t}'`)
+    assert.ok(idx('tensions') < idx('complements'), 'tensions before complements')
+    assert.ok(idx('depends') < idx('complements'), 'depends before complements')
+    assert.ok(idx('supersedes') < idx('complements'), 'supersedes before complements')
+  })
 })
