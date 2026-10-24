@@ -811,13 +811,23 @@ describe('client · interaction contract', () => {
     assert.equal(alphaAt(8), 1, 'zoomed in, labels are fully opaque')
     // The middle must be strictly between: that is what "fade" means.
     //
-    // ⚠️ The probe has to be a zoom AND degree where the curve is actually in
-    // its transition, not a guess. With the importance gate in place:
-    //   scale 1, degree 2 → log2(1)+1-2.2+1.0 = -0.2 → hidden (by design)
-    //   scale 2, degree 2 → log2(2)+1-2.2+1.0 =  0.8 → partial
-    // Asserting the first would be asserting the old saturated curve.
-    const mid = alphaAt(2, 2)
-    assert.ok(mid > 0 && mid < 1, `at scale 2 a degree-2 node should be partial, got ${mid}`)
+    // ⚠️ The probe has to sit in the curve's transition region for the CURRENT
+    // constants, and that region moves whenever either the fade multiplier or
+    // the layout changes. Hard-coding a scale here has now needed two updates:
+    //   - with mult 2.2, degree 2 was hidden at scale 1 and partial at scale 2
+    //   - with mult 1.5 (recalibrated for the corrected 1/d repulsion, where
+    //     auto-fit lands near scale 0.9), degree 2 is partial at scale 1
+    // So the probe is found numerically instead of encoded: scan for a zoom
+    // where a degree-2 node is genuinely mid-fade. If no such zoom exists the
+    // curve has collapsed into a step, which is the regression this guards.
+    let midScale = null
+    for (let s = 0.2; s <= 8; s += 0.02) {
+      const a = alphaAt(s, 2)
+      if (a > 0.2 && a < 0.8) { midScale = s; break }
+    }
+    assert.ok(midScale !== null, 'the curve must have a gradual region for degree-2 nodes')
+    const mid = alphaAt(midScale, 2)
+    assert.ok(mid > 0 && mid < 1, `degree-2 alpha should be partial at scale ${midScale.toFixed(2)}, got ${mid}`)
     // And it must be monotonic: no jump back and forth as the user zooms.
     let prev = -1
     for (let s = 0.1; s <= 8; s += 0.1) {

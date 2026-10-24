@@ -42,11 +42,22 @@ export const LOCK_STALE_MS = 5000
 /**
  * How long a caller waits for a held lock before giving up.
  *
- * Deliberately much shorter than LOCK_STALE_MS: waiting is synchronous, so it
- * blocks whatever asked to write. Two seconds of contention is already a sign
- * something is wrong; failing loudly beats stalling a tool call.
+ * ⚠️ This was 2 s, and that was too short once real contention appeared: the
+ * concurrent-connect test starts 8 processes that each take the lock, and
+ * under a loaded machine (the whole suite running in parallel) the queue
+ * legitimately exceeded two seconds. The failure surfaced as "8 processes
+ * could not each create an edge", which looks like a locking bug but was
+ * simply a timeout.
+ *
+ * 5 s matches LOCK_STALE_MS, which keeps the two semantics consistent: a lock
+ * older than 5 s is considered abandoned, so waiting longer than that is
+ * pointless — the holder would have been reclaimed anyway.
+ *
+ * Waiting is synchronous and blocks whatever asked to write, so this is
+ * deliberately not longer. Beyond a few seconds of contention something is
+ * genuinely wrong and failing loudly beats stalling a tool call.
  */
-export const LOCK_WAIT_MS = 2000
+export const LOCK_WAIT_MS = 5000
 
 /**
  * Whether a process id is still running.
