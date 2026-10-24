@@ -21,9 +21,9 @@ without output is not verification.
     node test/checks/manifest-check.mjs → passed
 -->
 
-```
+\	ext
 paste output
-```
+\	ext
 
 ## Checklist
 

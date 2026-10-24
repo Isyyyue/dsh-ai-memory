@@ -37,9 +37,9 @@ content. Reproduce with a temporary directory instead:
     const ops = createOperations(lib)
 -->
 
-```
+\	ext
 paste output here
-```
+\	ext
 
 ## Is it silent?
 

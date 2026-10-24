@@ -14,11 +14,11 @@ assignees: ''
 
 ```powershell
 plugin_manager action=list_plugins
-```
+\	ext
 
-```
+\	ext
 paste the dsh-ai-memory entry here
-```
+\	ext
 
 ## Checks already run
 
@@ -27,11 +27,11 @@ npm test
 node test/manifest-check.mjs
 node test/verify-profile.mjs      # is the installed copy current?
 node test/bundle-served.mjs       # is the client bundle being served?
-```
+\	ext
 
-```
+\	ext
 paste output
-```
+\	ext
 
 ## Common causes, before you file this
 
