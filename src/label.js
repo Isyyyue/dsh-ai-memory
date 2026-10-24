@@ -110,12 +110,23 @@ export function extractLabel(text, max = LABEL_MAX) {
   //    A quote is only preferred when it makes up a large share of the sentence
   //    and is long enough to stand alone; otherwise the sentence head is a
   //    better label.
+  //
+  //    ⚠️ This runs **before** the boundary cut, and the earlier order was a
+  //    bug: `主人说「我相信你未来会是 AGI」——这种期望…` was cut at `——` first,
+  //    leaving `「我相信你未来会是 AGI」`, and the quote regex then matched the
+  //    whole thing including the closing bracket, producing a label that ended
+  //    in a stray `」`. Stripping the brackets first keeps the cut from ever
+  //    seeing them.
   const quoted = /[「『"]([^」』"]{2,})[」』"]/.exec(s)
   if (quoted !== null) {
     const inner = quoted[1].trim()
     const isSubstantial = inner.length >= 8 && inner.length >= s.length * 0.4
     if (isSubstantial) s = inner
   }
+  // Any bracket left dangling at either end is noise now that a quote was
+  // either adopted (brackets already gone) or rejected.
+  s = s.replace(/^[「『"'」』]+/, '').replace(/[「『"'」』]+$/, '').trim()
+  if (s === '') return ''
 
   // 3. Cut at the first natural boundary, keeping the head.
   for (const sep of BOUNDARIES) {

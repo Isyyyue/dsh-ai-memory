@@ -795,9 +795,13 @@ describe('client · interaction contract', () => {
     // The importance factor is what keeps a 30-node graph readable; see
     // graph-physics.test.js for the measured numbers behind it.
     assert.ok(/labelAlphaFor\(id, degree = 0\) \{/.test(code), 'labelAlphaFor(id, degree) should exist')
-    assert.ok(/Math\.log2\(this\.scale\)/.test(code), 'the fade must follow log2(scale), per Obsidian')
+    assert.ok(
+      /const logScale = Math\.log2\(Math\.max\(0\.05, this\.scale\)\)/.test(code),
+      'the fade must follow log2(scale), per Obsidian',
+    )
     assert.ok(/TEXT_FADE_MULTIPLIER/.test(code), 'the curve needs its shift constant')
     assert.ok(/const importance = /.test(code), 'the curve needs its importance gate')
+    assert.ok(/MIN_COMPENSATION/.test(code), 'the threshold must adapt to panel size')
 
     // Reproduce the curve and check it is genuinely gradual, not a step.
     const mult = Number(/const TEXT_FADE_MULTIPLIER = ([\d.]+)/.exec(code)[1])
