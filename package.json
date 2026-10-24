@@ -2,7 +2,7 @@
   "name": "dsh-ai-memory",
   "version": "0.2.0",
   "type": "module",
-  "description": "Persistent judgment memory for DeepSeek Harness agents: a bi-temporal JSONL ledger with deterministic supersession, open questions, and a knowledge graph.",
+  "description": "Auditable long-term judgment memory for DeepSeek Harness agents: deterministic supersession, open questions, user-confirmed personality evolution, and a knowledge graph.",
   "author": "Isyyyue",
   "repository": {
     "type": "git",
